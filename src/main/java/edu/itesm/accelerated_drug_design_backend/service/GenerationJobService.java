@@ -2,6 +2,7 @@ package edu.itesm.accelerated_drug_design_backend.service;
 
 import edu.itesm.accelerated_drug_design_backend.core.CoreSystemInterface;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
 import edu.itesm.accelerated_drug_design_backend.dto.ProteinMpnnRunRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
@@ -16,6 +17,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -56,13 +58,41 @@ public class GenerationJobService {
 		return list;
 	}
 
+	/** Returns list items with backboneId and backboneName set inside the transaction (for list API). */
+	@Transactional(readOnly = true)
+	public List<GenerationJobListItem> findListItemsByProjectId(Long projectId) {
+		List<GenerationJob> list = generationJobRepository.findByProject_IdOrderByIdDesc(projectId);
+		List<GenerationJobListItem> out = new ArrayList<>(list.size());
+		for (GenerationJob job : list) {
+			GenerationJobListItem dto = new GenerationJobListItem();
+			dto.setId(job.getId());
+			dto.setRunId(job.getRunId());
+			dto.setStatus(job.getStatus());
+			dto.setError(job.getError());
+			dto.setTemperature(job.getTemperature());
+			dto.setNumSeqs(job.getNumSeqs());
+			dto.setOutputCsv(job.getOutputCsv());
+			dto.setFasta(job.getFasta());
+			dto.setBestPdb(job.getBestPdb());
+			dto.setTotalRecords(job.getTotalRecords());
+			if (job.getBackbone() != null) {
+				dto.setBackboneId(job.getBackbone().getId());
+				dto.setBackboneName(job.getBackbone().getName());
+			}
+			dto.setCreatedAt(job.getCreatedAt());
+			dto.setCompletedAt(job.getCompletedAt());
+			out.add(dto);
+		}
+		return out;
+	}
+
 	public Optional<GenerationJob> findByProjectIdAndRunId(Long projectId, String runId) {
 		return generationJobRepository.findByProject_IdAndRunId(projectId, runId);
 	}
 
 	@Transactional(readOnly = true)
 	public Optional<GenerationJob> findById(Long id) {
-		Optional<GenerationJob> opt = generationJobRepository.findById(id);
+		Optional<GenerationJob> opt = generationJobRepository.findByIdWithBackbone(id);
 		opt.ifPresent(job -> {
 			if (job.getBackbone() != null) job.getBackbone().getName();
 			if (job.getProject() != null) job.getProject().getId();
@@ -122,10 +152,8 @@ public class GenerationJobService {
 			return "";
 		}
 		StringBuilder sb = new StringBuilder();
-		sb.append("seq,mpnn,plddt,ptm,i_ptm,pae,i_pae,rmsd\n");
+		sb.append("mpnn,plddt,ptm,i_ptm,pae,i_pae,rmsd,seq\n");
 		for (GenerationJobRecord r : records) {
-			sb.append(escapeCsv(r.getSeq()));
-			sb.append(',');
 			sb.append(escapeCsv(r.getMpnn()));
 			sb.append(',');
 			sb.append(r.getPlddt() != null ? r.getPlddt() : "");
@@ -139,6 +167,8 @@ public class GenerationJobService {
 			sb.append(escapeCsv(r.getIPae()));
 			sb.append(',');
 			sb.append(r.getRmsd() != null ? r.getRmsd() : "");
+			sb.append(',');
+			sb.append(escapeCsv(r.getSeq()));
 			sb.append('\n');
 		}
 		return sb.toString();
@@ -174,6 +204,7 @@ public class GenerationJobService {
 		job.setStatus(STATUS_RUNNING);
 		job.setTemperature(temperature);
 		job.setNumSeqs(numSeqs);
+		job.setCreatedAt(Instant.now());
 		job = generationJobRepository.save(job);
 
 		ProteinMpnnRunRequest coreRequest = new ProteinMpnnRunRequest();
@@ -191,6 +222,7 @@ public class GenerationJobService {
 			String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
 			job.setStatus(STATUS_ERROR);
 			job.setError(errMsg);
+			job.setCompletedAt(Instant.now());
 			job = generationJobRepository.save(job);
 			log.warn("Core MPNN call failed for runId={}: {}", runId, errMsg, e);
 		}
@@ -204,7 +236,7 @@ public class GenerationJobService {
 			return null;
 		}
 
-		Map<String, Object> response = coreSystem.getMpnnStatus(runId, null);
+		Map<String, Object> response = coreSystem.getMpnnStatus(runId);
 		if (response == null) {
 			return job;
 		}
@@ -234,11 +266,20 @@ public class GenerationJobService {
 			job.setBestPdb(bestPdbContent);
 			job.setTotalRecords(totalRecords);
 			job.setError(null);
+			if (job.getCompletedAt() == null) {
+				job.setCompletedAt(Instant.now());
+			}
 
 			generationJobRecordRepository.deleteByGenerationJob_Id(job.getId());
 
-			// Core returns detail array in the same response (key "detail"); enrich with metrics from FASTA
-			saveDetailRecordsFromResponse(job, response, fastaContent);
+			// Core detail is on GET /run/mpnn/status/{run_id}/detail?batch=N; fetch each batch and save records
+			int batches = totalBatches != null && totalBatches > 0 ? totalBatches : 0;
+			for (int b = 0; b < batches; b++) {
+				Map<String, Object> detailResponse = coreSystem.getMpnnStatusDetail(runId, b);
+				if (detailResponse != null) {
+					saveDetailRecordsFromResponse(job, detailResponse, fastaContent);
+				}
+			}
 			generationJobRepository.save(job);
 		} else if (STATUS_ERROR.equals(status)) {
 			String errorDetails = getString(response, "error_details");
@@ -246,6 +287,9 @@ public class GenerationJobService {
 			if (errorDetails == null) errorDetails = getString(response, "message");
 			if (errorDetails == null) errorDetails = "Unknown error";
 			job.setError(errorDetails);
+			if (job.getCompletedAt() == null) {
+				job.setCompletedAt(Instant.now());
+			}
 			generationJobRepository.save(job);
 		} else {
 			generationJobRepository.save(job);

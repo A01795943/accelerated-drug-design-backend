@@ -22,7 +22,7 @@ public class CoreSystemService implements CoreSystemInterface {
 
 	private static final Logger log = LoggerFactory.getLogger(CoreSystemService.class);
 
-	private static final String CORE_SYSTEM_IP = "34.42.186.254";
+	private static final String CORE_SYSTEM_IP = "34.72.141.5";
 	private static final int CORE_SYSTEM_PORT = 8000;
 	private static final String RFDIFFUSION_BASE = "http://" + CORE_SYSTEM_IP + ":" + CORE_SYSTEM_PORT + "/run/rfdiffusion";
 	private static final String MPNN_BASE = "http://" + CORE_SYSTEM_IP + ":" + CORE_SYSTEM_PORT + "/run/mpnn";
@@ -65,17 +65,27 @@ public class CoreSystemService implements CoreSystemInterface {
 	}
 
 	@Override
-	public Map<String, Object> getMpnnStatus(String runId, Integer batch) {
+	public Map<String, Object> getMpnnStatus(String runId) {
 		String url = MPNN_BASE + "/status/" + runId;
-		if (batch != null) {
-			url = url + "?batch=" + batch;
-		}
 		try {
 			@SuppressWarnings("unchecked")
 			Map<String, Object> body = restTemplate.getForObject(url, Map.class);
 			return body != null ? body : new LinkedHashMap<>();
 		} catch (Exception e) {
 			log.warn("Failed to get MPNN status from {}: {}", url, e.getMessage(), e);
+			return null;
+		}
+	}
+
+	@Override
+	public Map<String, Object> getMpnnStatusDetail(String runId, int batch) {
+		String url = MPNN_BASE + "/status/" + runId + "/detail?batch=" + batch;
+		try {
+			@SuppressWarnings("unchecked")
+			Map<String, Object> body = restTemplate.getForObject(url, Map.class);
+			return body != null ? body : new LinkedHashMap<>();
+		} catch (Exception e) {
+			log.warn("Failed to get MPNN status detail from {}: {}", url, e.getMessage(), e);
 			return null;
 		}
 	}

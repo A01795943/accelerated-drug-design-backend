@@ -28,12 +28,20 @@ public interface CoreSystemInterface {
 	void triggerMpnn(ProteinMpnnRunRequest request);
 
 	/**
-	 * Get MPNN run status. Returns null if the request fails.
-	 * When batch is null: returns status and when COMPLETED also summary (fasta, best_pdb, total_records, total_batches).
-	 * When batch is not null: returns that batch of detail records (run_id, n, pdb, seq, metrics).
+	 * Get MPNN run status (overall only). Returns null if the request fails.
+	 * When COMPLETED, response includes summary (fasta_content, best_pdb_content) and pagination (total_records, total_batches).
+	 * Detail records are fetched separately via {@link #getMpnnStatusDetail(String, int)}.
 	 *
 	 * @param runId run identifier
-	 * @param batch 0-based batch index, or null for summary / first call
 	 */
-	Map<String, Object> getMpnnStatus(String runId, Integer batch);
+	Map<String, Object> getMpnnStatus(String runId);
+
+	/**
+	 * Get one batch of MPNN detail records for a completed run. Returns null if the request fails.
+	 * Response contains "detail" array and "pagination" (total_records, total_batches, batch_size).
+	 *
+	 * @param runId run identifier
+	 * @param batch 0-based batch index
+	 */
+	Map<String, Object> getMpnnStatusDetail(String runId, int batch);
 }

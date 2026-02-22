@@ -1,7 +1,10 @@
 package edu.itesm.accelerated_drug_design_backend.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
+
+import java.time.Instant;
 
 @Entity
 @Table(name = "generation_jobs")
@@ -13,6 +16,12 @@ public class GenerationJob {
 
 	@Column(name = "run_id", length = 64, unique = true)
 	private String runId;
+
+	@Column(name = "created_at", updatable = false)
+	private Instant createdAt;
+
+	@Column(name = "completed_at")
+	private Instant completedAt;
 
 	@ManyToOne(fetch = FetchType.LAZY)
 	@JoinColumn(name = "project_id", nullable = false)
@@ -69,6 +78,17 @@ public class GenerationJob {
 
 	public void setBackbone(Backbone backbone) {
 		this.backbone = backbone;
+	}
+
+	/** Exposed in API so the frontend can show backbone as "#id name" without loading the full entity. */
+	@JsonProperty("backboneId")
+	public Long getBackboneId() {
+		return backbone == null ? null : backbone.getId();
+	}
+
+	@JsonProperty("backboneName")
+	public String getBackboneName() {
+		return backbone == null ? null : backbone.getName();
 	}
 
 	public String getRunId() {
@@ -141,5 +161,21 @@ public class GenerationJob {
 
 	public void setTotalRecords(Integer totalRecords) {
 		this.totalRecords = totalRecords;
+	}
+
+	public Instant getCreatedAt() {
+		return createdAt;
+	}
+
+	public void setCreatedAt(Instant createdAt) {
+		this.createdAt = createdAt;
+	}
+
+	public Instant getCompletedAt() {
+		return completedAt;
+	}
+
+	public void setCompletedAt(Instant completedAt) {
+		this.completedAt = completedAt;
 	}
 }

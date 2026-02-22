@@ -1,6 +1,7 @@
 package edu.itesm.accelerated_drug_design_backend.web;
 
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJob;
 import edu.itesm.accelerated_drug_design_backend.service.GenerationJobService;
@@ -25,8 +26,8 @@ public class GenerationJobController {
 	}
 
 	@GetMapping
-	public ResponseEntity<List<GenerationJob>> listJobs(@PathVariable Long projectId) {
-		return ResponseEntity.ok(generationJobService.findByProjectId(projectId));
+	public ResponseEntity<List<GenerationJobListItem>> listJobs(@PathVariable Long projectId) {
+		return ResponseEntity.ok(generationJobService.findListItemsByProjectId(projectId));
 	}
 
 	@GetMapping("/{jobId}")
