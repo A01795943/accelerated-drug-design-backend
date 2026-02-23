@@ -1,0 +1,11 @@
+# Perfil local (default): URL del core y BD con valores por defecto
+app:
+  core:
+    base-url: http://100.76.235.84:8000
+
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/drug_accelerator?createDatabaseIfNotExist=true&characterEncoding=utf8&connectionCollation=utf8_general_ci
+    username: root
+    password: ""
+    driver-class-name: com.mysql.cj.jdbc.Driver
