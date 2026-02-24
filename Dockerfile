@@ -1,5 +1,5 @@
 # Backend Drug Accelerator: Java 21, perfil docker. La BD se crea y administra aparte.
-# Uso: docker build --build-arg CORE_URL=http://HOST:8000 --build-arg DB_URL=jdbc:mysql://... --build-arg DB_USERNAME=app --build-arg DB_PASSWORD=secret -t backend .
+# Uso: docker build --build-arg CORE_URL=... --build-arg DB_URL=... --build-arg DB_USERNAME=... --build-arg DB_PASSWORD=... --build-arg CORS_ORIGINS=http://IP:4200 -t backend .
 
 FROM eclipse-temurin:21-jdk-jammy AS builder
 
@@ -20,6 +20,7 @@ ARG CORE_URL
 ARG DB_URL
 ARG DB_USERNAME
 ARG DB_PASSWORD
+ARG CORS_ORIGINS
 
 COPY --from=builder /build/build/libs/accelerated-drug-design-backend-*.jar /app/accelerated-drug-design-backend.jar
 
@@ -28,7 +29,8 @@ ENV SPRING_PROFILES_ACTIVE=docker \
     CORE_URL="${CORE_URL}" \
     DB_URL="${DB_URL}" \
     DB_USERNAME="${DB_USERNAME}" \
-    DB_PASSWORD="${DB_PASSWORD}"
+    DB_PASSWORD="${DB_PASSWORD}" \
+    CORS_ORIGINS="${CORS_ORIGINS}"
 
 EXPOSE 8080
 

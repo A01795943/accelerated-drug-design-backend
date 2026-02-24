@@ -1,8 +1,10 @@
-# Perfil docker: core y BD desde variables de entorno
-# Requiere: CORE_URL, DB_URL, DB_USERNAME, DB_PASSWORD
+# Perfil docker: core, BD y CORS desde variables de entorno
+# Requiere: CORE_URL, DB_URL, DB_USERNAME, DB_PASSWORD, CORS_ORIGINS
 app:
   core:
     base-url: ${CORE_URL}
+  cors:
+    allowed-origins: ${CORS_ORIGINS}
 
 spring:
   datasource:
