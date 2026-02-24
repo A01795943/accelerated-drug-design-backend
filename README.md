@@ -7,46 +7,197 @@ API del proyecto **Drug Accelerator** (diseño acelerado de fármacos). Expone l
 - **Proyectos**: CRUD de proyectos (nombre, descripción, proteína diana y complejo, opción de descarga desde PDB).
 - **Backbones**: Crear, listar y eliminar backbones por proyecto; consultar estado por `runId`; ejecución con contigs, hotspots, cadenas a eliminar, etc.
 - **Trabajos de generación**: Crear, listar y eliminar jobs por proyecto; consultar estado por `runId`; descarga de resultados (CSV, FASTA, mejor PDB).
-- **Generación**: Endpoint para lanzar o orquestar la generación (según implementación).
 
-El frontend espera la API en **http://localhost:8080** (por ejemplo `GET/POST /api/projects`, `GET/POST/DELETE /api/projects/:id/backbones`, `GET/POST/DELETE /api/projects/:id/generation-jobs`, etc.).
+El frontend se conecta a esta API (puerto 8080). CORS se configura con `CORS_ORIGINS` (orígenes permitidos separados por coma).
 
-## Cómo ejecutarlo
+---
 
-### Requisitos
+## Instalar y desplegar el backend (admin en GCP)
 
-Dependen del stack del backend (por ejemplo: Java 17+, Maven/Gradle para Spring Boot; o Python 3.x y dependencias si es FastAPI/Flask).
-
-### Instalación y arranque
-
-Ejemplos según tecnología:
-
-**Si es Spring Boot (Java):**
+Esta guía asume que el **sistema core** de Drug Accelerator está montado en un servidor accesible desde internet. Si está en una workstation del Tecnológico de Monterrey a la que se accede por **VPN Tailscale**, instala la VPN en la instancia antes de desplegar:
 
 ```bash
-./mvnw spring-boot:run
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
 ```
 
-o, con Gradle:
+Se mostrará un enlace para autenticar en el navegador. Tras autenticar, la terminal mostrará **Success** y la instancia podrá comunicarse con la workstation.
+
+### 1. Crear la base de datos en GCP (Cloud Shell)
+
+```bash
+gcloud sql instances create drug-accelerator-mysql \
+  --database-version=MYSQL_8_0 \
+  --region=us-central1 \
+  --tier=db-g1-small \
+  --storage-type=SSD \
+  --storage-size=10 \
+  --backup-start-time=03:00 \
+  --authorized-networks=0.0.0.0/0
+```
+
+Ver la IP de la BD:
+
+```bash
+gcloud sql instances describe drug-accelerator-mysql \
+  --format="value(ipAddresses)"
+```
+
+Crear contraseña de root:
+
+```bash
+gcloud sql users set-password root \
+  --host=% \
+  --instance=drug-accelerator-mysql \
+  --password="PASSWORD"
+```
+
+Crea la base de datos y las tablas con el script `db.sql` (ejecutarlo contra esa instancia MySQL).
+
+### 2. Crear la instancia VM en GCP
+
+```bash
+gcloud compute instances create drug-accelerator-admin \
+  --machine-type e2-small \
+  --zone us-central1-a \
+  --image-family ubuntu-2204-lts \
+  --image-project ubuntu-os-cloud \
+  --maintenance-policy MIGRATE \
+  --boot-disk-size 30GB \
+  --boot-disk-type pd-balanced \
+  --tags http-server,https-server
+```
+
+Abrir puerto 8080 (backend):
+
+```bash
+gcloud compute instances add-tags drug-accelerator-admin \
+  --zone us-central1-a \
+  --tags backend-8080
+
+gcloud compute firewall-rules create allow-backend-8080 \
+  --direction=INGRESS \
+  --priority=1000 \
+  --network=default \
+  --action=ALLOW \
+  --rules=tcp:8080 \
+  --source-ranges=0.0.0.0/0 \
+  --target-tags=backend-8080
+```
+
+Abrir puerto 4200 (frontend):
+
+```bash
+gcloud compute instances add-tags drug-accelerator-admin \
+  --zone us-central1-a \
+  --tags frontend-4200
+
+gcloud compute firewall-rules create allow-frontend-4200 \
+  --direction=INGRESS \
+  --priority=1000 \
+  --network=default \
+  --action=ALLOW \
+  --rules=tcp:4200 \
+  --source-ranges=0.0.0.0/0 \
+  --target-tags=frontend-4200
+```
+
+### 3. En la VM: instalar Docker y Docker Compose
+
+Conéctate por SSH a la instancia y ejecuta:
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+
+# Llave oficial de Docker
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+# Repositorio
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Instalar
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+sudo systemctl enable docker
+sudo systemctl start docker
+
+docker --version
+docker compose version
+```
+
+### 4. Desplegar el backend
+
+Clonar el repositorio:
+
+```bash
+git clone https://github.com/A01795943/accelerated-drug-design-backend.git
+cd accelerated-drug-design-backend
+```
+
+Construir la imagen (sustituye las URLs, IP de la BD, usuario, contraseña y CORS por los tuyos):
+
+```bash
+sudo docker build \
+  --build-arg CORE_URL=http://100.76.235.84:8000 \
+  --build-arg DB_URL="jdbc:mysql://IP_BD:3306/drug_accelerator?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8&connectionCollation=utf8_general_ci" \
+  --build-arg DB_USERNAME=root \
+  --build-arg DB_PASSWORD="TU_PASSWORD" \
+  --build-arg CORS_ORIGINS=http://IP_VM:4200 \
+  -t backend \
+  .
+```
+
+Si construyes desde una carpeta que **contiene** `accelerated-drug-design-backend`:
+
+```bash
+sudo docker build \
+  --build-arg CORE_URL=http://100.76.235.84:8000 \
+  --build-arg DB_URL="jdbc:mysql://IP_BD:3306/drug_accelerator?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8&connectionCollation=utf8_general_ci" \
+  --build-arg DB_USERNAME=root \
+  --build-arg DB_PASSWORD="TU_PASSWORD" \
+  --build-arg CORS_ORIGINS=http://IP_VM:4200 \
+  -f accelerated-drug-design-backend/Dockerfile \
+  -t backend \
+  accelerated-drug-design-backend
+```
+
+Iniciar el contenedor:
+
+```bash
+sudo docker run -d \
+  --name backend \
+  -p 8080:8080 \
+  --restart unless-stopped \
+  backend
+```
+
+El backend queda disponible en `http://IP_VM:8080`.
+
+---
+
+## Ejecución local (sin Docker)
+
+Requisitos: Java 21+, Gradle. Perfil por defecto: `local` (BD y core en `application-local.yaml`).
 
 ```bash
 ./gradlew bootRun
 ```
 
-**Si es Python (FastAPI/Flask, etc.):**
+Con perfil docker (variables de entorno):
 
 ```bash
-pip install -r requirements.txt
-python main.py
-# u otro comando que levante el servidor en el puerto 8080
+export CORE_URL=http://...
+export DB_URL=jdbc:mysql://...
+export DB_USERNAME=...
+export DB_PASSWORD=...
+export CORS_ORIGINS=http://localhost:4200
+./gradlew bootRun --args='--spring.profiles.active=docker'
 ```
-
-Asegúrate de que el servidor quede escuchando en el **puerto 8080** (o cambia la URL en el frontend en `src/environments/environment.ts`).
-
-### Variables de entorno
-
-Si el backend usa base de datos o claves externas, configura las variables que requiera (por ejemplo `DATABASE_URL`, API keys, etc.) según la documentación o los archivos de ejemplo (`.env.example`) del repositorio.
-
-## Proyecto Drug Accelerator
-
-Este backend forma parte del proyecto **Drug Accelerator**. El frontend Angular se conecta a esta API para gestionar proyectos, backbones y trabajos de generación de secuencias.
