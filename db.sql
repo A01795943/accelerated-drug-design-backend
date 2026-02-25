@@ -92,3 +92,60 @@ CREATE TABLE generation_jobs_records (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 
 CREATE INDEX idx_generation_jobs_records_job_id ON generation_jobs_records (generation_job_id);
+
+-- ------------------------------------------------------------
+-- Tablas para Spring Security (usuarios, roles, permisos)
+-- ------------------------------------------------------------
+
+-- Tabla: users (usuarios del sistema)
+CREATE TABLE users (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(100) NOT NULL UNIQUE,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+CREATE INDEX idx_users_username ON users (username);
+CREATE INDEX idx_users_email ON users (email);
+
+-- Tabla: roles (USER, ADMIN)
+CREATE TABLE roles (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(50) NOT NULL UNIQUE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- Tabla: user_roles (relación usuario-rol)
+CREATE TABLE user_roles (
+  user_id BIGINT NOT NULL,
+  role_id BIGINT NOT NULL,
+  PRIMARY KEY (user_id, role_id),
+  CONSTRAINT fk_user_roles_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_roles_role FOREIGN KEY (role_id) REFERENCES roles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- Tabla: refresh_tokens (opcional, para renovar JWT)
+CREATE TABLE refresh_tokens (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  token VARCHAR(512) NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  revoked TINYINT(1) NOT NULL DEFAULT 0,
+  CONSTRAINT fk_refresh_tokens_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+CREATE INDEX idx_refresh_tokens_token ON refresh_tokens (token);
+CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens (user_id);
+
+-- Datos iniciales: roles
+INSERT INTO roles (name) VALUES ('USER'), ('ADMIN');
+
+-- Usuario admin con contraseña "admin" (BCrypt hash, strength 10)
+-- Si el hash no coincide, la aplicación puede crear admin al arrancar (DataLoader)
+INSERT INTO users (username, email, password_hash, enabled) VALUES
+  ('admin', 'admin@admin.com', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 1);
+
+-- Asignar rol ADMIN al usuario admin (role_id 2 = ADMIN)
+INSERT INTO user_roles (user_id, role_id) VALUES (1, 2);
