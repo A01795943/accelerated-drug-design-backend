@@ -1,6 +1,8 @@
 package edu.itesm.accelerated_drug_design_backend.service;
 
+import edu.itesm.accelerated_drug_design_backend.cache.PdbCacheService;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateProjectRequest;
+import edu.itesm.accelerated_drug_design_backend.dto.ProjectSummaryDto;
 import edu.itesm.accelerated_drug_design_backend.entity.Project;
 import edu.itesm.accelerated_drug_design_backend.repository.ProjectRepository;
 import org.springframework.stereotype.Service;
@@ -14,19 +16,47 @@ public class ProjectService {
 
 	private final ProjectRepository projectRepository;
 	private final RestTemplate restTemplate;
+	private final PdbCacheService pdbCache;
 
-	public ProjectService(ProjectRepository projectRepository, RestTemplate restTemplate) {
+	public ProjectService(ProjectRepository projectRepository, RestTemplate restTemplate, PdbCacheService pdbCache) {
 		this.projectRepository = projectRepository;
 		this.restTemplate = restTemplate;
+		this.pdbCache = pdbCache;
 	}
 
-	public List<Project> findAll() {
-		return projectRepository.findAll();
+	public List<ProjectSummaryDto> findAll() {
+		return projectRepository.findAllSummaries();
 	}
 
-	public Project findById(Long id) {
+	public ProjectSummaryDto findById(Long id) {
+		return projectRepository.findSummaryById(id)
+				.orElseThrow(() -> new IllegalArgumentException("Project not found: " + id));
+	}
+
+	/** Entidad completa para uso interno (p. ej. asociar a Backbone/GenerationJob). */
+	public Project findEntityById(Long id) {
 		return projectRepository.findById(id)
 				.orElseThrow(() -> new IllegalArgumentException("Project not found: " + id));
+	}
+
+	public String getTarget(Long projectId) {
+		return pdbCache.getTarget(projectId)
+				.orElseGet(() -> {
+					String value = projectRepository.findTargetById(projectId)
+							.orElseThrow(() -> new IllegalArgumentException("Project not found: " + projectId));
+					pdbCache.putTarget(projectId, value);
+					return value;
+				});
+	}
+
+	public String getComplex(Long projectId) {
+		return pdbCache.getComplex(projectId)
+				.orElseGet(() -> {
+					String value = projectRepository.findComplexById(projectId)
+							.orElseThrow(() -> new IllegalArgumentException("Project not found: " + projectId));
+					pdbCache.putComplex(projectId, value);
+					return value;
+				});
 	}
 
 	public Project createProject(CreateProjectRequest request) {
@@ -40,7 +70,10 @@ public class ProjectService {
 		String complexContent = resolveComplex(request);
 		project.setComplex(complexContent);
 
-		return projectRepository.save(project);
+		Project saved = projectRepository.save(project);
+		pdbCache.putTarget(saved.getId(), targetContent);
+		pdbCache.putComplex(saved.getId(), complexContent);
+		return saved;
 	}
 
 	private String resolveTarget(CreateProjectRequest request) {

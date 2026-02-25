@@ -41,6 +41,7 @@ public class Backbone {
 	private Integer iterations;
 
 	@Column(columnDefinition = "LONGTEXT")
+	@JsonIgnore
 	private String structure;
 
 	@PrePersist

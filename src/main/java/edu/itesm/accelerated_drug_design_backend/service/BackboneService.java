@@ -1,6 +1,8 @@
 package edu.itesm.accelerated_drug_design_backend.service;
 
+import edu.itesm.accelerated_drug_design_backend.cache.PdbCacheService;
 import edu.itesm.accelerated_drug_design_backend.core.CoreSystemInterface;
+import edu.itesm.accelerated_drug_design_backend.dto.BackboneListDto;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateBackbonesRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RfdiffusionRunRequest;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
@@ -14,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 
 @Service
@@ -27,15 +30,34 @@ public class BackboneService {
 	private final BackboneRepository backboneRepository;
 	private final ProjectService projectService;
 	private final CoreSystemInterface coreSystem;
+	private final PdbCacheService pdbCache;
 
-	public BackboneService(BackboneRepository backboneRepository, ProjectService projectService, CoreSystemInterface coreSystem) {
+	public BackboneService(BackboneRepository backboneRepository, ProjectService projectService,
+			CoreSystemInterface coreSystem, PdbCacheService pdbCache) {
 		this.backboneRepository = backboneRepository;
 		this.projectService = projectService;
 		this.coreSystem = coreSystem;
+		this.pdbCache = pdbCache;
 	}
 
 	public List<Backbone> findByProjectId(Long projectId) {
 		return backboneRepository.findByProject_IdOrderByIdAsc(projectId);
+	}
+
+	/** Listado sin structure para pantalla (nombre, id, contigs, hotspots, cadenas a eliminar, etc.). */
+	@Transactional(readOnly = true)
+	public List<BackboneListDto> findListByProjectId(Long projectId) {
+		return backboneRepository.findListByProjectId(projectId);
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<String> getStructure(Long projectId, Long backboneId) {
+		return pdbCache.getBackboneStructure(projectId, backboneId)
+				.or(() -> {
+					Optional<String> fromDb = backboneRepository.findStructureByProjectIdAndBackboneId(projectId, backboneId);
+					fromDb.ifPresent(value -> pdbCache.putBackboneStructure(projectId, backboneId, value));
+					return fromDb;
+				});
 	}
 
 	@Transactional
@@ -50,7 +72,7 @@ public class BackboneService {
 
 	@Transactional
 	public List<Backbone> createBackbones(Long projectId, CreateBackbonesRequest request) {
-		Project project = projectService.findById(projectId);
+		Project project = projectService.findEntityById(projectId);
 		int count = request.getCount() != null ? Math.max(1, request.getCount()) : 1;
 		int iterations = request.getIterations() != null ? Math.max(1, request.getIterations()) : 30;
 		String contigs = request.getContigs();
@@ -79,6 +101,8 @@ public class BackboneService {
 		coreRequest.setContigs(contigs != null ? contigs : "");
 		coreRequest.setIterations(iterations);
 		coreRequest.setNumDesigns(count);
+		coreRequest.setHotspot(hotspots != null ? hotspots : "");
+		coreRequest.setChainToRemove(chainsToRemove != null ? chainsToRemove : "");
 
 		try {
 			coreSystem.triggerRfdiffusion(coreRequest);
@@ -138,6 +162,9 @@ public class BackboneService {
 				}
 			}
 			backboneRepository.saveAll(backbones);
+			for (Backbone bb : backbones) {
+				pdbCache.evictBackboneStructure(projectId, bb.getId());
+			}
 		} else if (STATUS_ERROR.equals(status)) {
 			String errorDetails = getString(response, "error_details");
 			if (errorDetails == null) {

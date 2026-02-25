@@ -1,10 +1,12 @@
 package edu.itesm.accelerated_drug_design_backend.web;
 
+import edu.itesm.accelerated_drug_design_backend.dto.BackboneListDto;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateBackbonesRequest;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
 import edu.itesm.accelerated_drug_design_backend.service.BackboneService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -21,8 +23,17 @@ public class BackboneController {
 	}
 
 	@GetMapping
-	public ResponseEntity<List<Backbone>> listBackbones(@PathVariable Long projectId) {
-		return ResponseEntity.ok(backboneService.findByProjectId(projectId));
+	public ResponseEntity<List<BackboneListDto>> listBackbones(@PathVariable Long projectId) {
+		return ResponseEntity.ok(backboneService.findListByProjectId(projectId));
+	}
+
+	@GetMapping(value = "/{backboneId}/structure", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> getBackboneStructure(
+			@PathVariable Long projectId,
+			@PathVariable Long backboneId) {
+		return backboneService.getStructure(projectId, backboneId)
+				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
 	}
 
 	@GetMapping("/status/{runId}")

@@ -1,8 +1,11 @@
 package edu.itesm.accelerated_drug_design_backend.service;
 
+import edu.itesm.accelerated_drug_design_backend.cache.PdbCacheService;
 import edu.itesm.accelerated_drug_design_backend.core.CoreSystemInterface;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobDetailDto;
 import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobRecordListDto;
 import edu.itesm.accelerated_drug_design_backend.dto.ProteinMpnnRunRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
@@ -35,17 +38,20 @@ public class GenerationJobService {
 	private final BackboneRepository backboneRepository;
 	private final ProjectService projectService;
 	private final CoreSystemInterface coreSystem;
+	private final PdbCacheService pdbCache;
 
 	public GenerationJobService(GenerationJobRepository generationJobRepository,
 			GenerationJobRecordRepository generationJobRecordRepository,
 			BackboneRepository backboneRepository,
 			ProjectService projectService,
-			CoreSystemInterface coreSystem) {
+			CoreSystemInterface coreSystem,
+			PdbCacheService pdbCache) {
 		this.generationJobRepository = generationJobRepository;
 		this.generationJobRecordRepository = generationJobRecordRepository;
 		this.backboneRepository = backboneRepository;
 		this.projectService = projectService;
 		this.coreSystem = coreSystem;
+		this.pdbCache = pdbCache;
 	}
 
 	@Transactional(readOnly = true)
@@ -58,32 +64,10 @@ public class GenerationJobService {
 		return list;
 	}
 
-	/** Returns list items with backboneId and backboneName set inside the transaction (for list API). */
+	/** Returns list items without outputCsv, fasta or bestPdb (query selects only list columns). */
 	@Transactional(readOnly = true)
 	public List<GenerationJobListItem> findListItemsByProjectId(Long projectId) {
-		List<GenerationJob> list = generationJobRepository.findByProject_IdOrderByIdDesc(projectId);
-		List<GenerationJobListItem> out = new ArrayList<>(list.size());
-		for (GenerationJob job : list) {
-			GenerationJobListItem dto = new GenerationJobListItem();
-			dto.setId(job.getId());
-			dto.setRunId(job.getRunId());
-			dto.setStatus(job.getStatus());
-			dto.setError(job.getError());
-			dto.setTemperature(job.getTemperature());
-			dto.setNumSeqs(job.getNumSeqs());
-			dto.setOutputCsv(job.getOutputCsv());
-			dto.setFasta(job.getFasta());
-			dto.setBestPdb(job.getBestPdb());
-			dto.setTotalRecords(job.getTotalRecords());
-			if (job.getBackbone() != null) {
-				dto.setBackboneId(job.getBackbone().getId());
-				dto.setBackboneName(job.getBackbone().getName());
-			}
-			dto.setCreatedAt(job.getCreatedAt());
-			dto.setCompletedAt(job.getCompletedAt());
-			out.add(dto);
-		}
-		return out;
+		return generationJobRepository.findListItemsByProjectId(projectId);
 	}
 
 	public Optional<GenerationJob> findByProjectIdAndRunId(Long projectId, String runId) {
@@ -98,6 +82,37 @@ public class GenerationJobService {
 			if (job.getProject() != null) job.getProject().getId();
 		});
 		return opt;
+	}
+
+	/** Detalle para pantalla (sin bestPdb, fasta). */
+	@Transactional(readOnly = true)
+	public Optional<GenerationJobDetailDto> findDetailByProjectIdAndJobId(Long projectId, Long jobId) {
+		return generationJobRepository.findDetailByProjectIdAndJobId(projectId, jobId);
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<String> getBestPdb(Long projectId, Long jobId) {
+		return pdbCache.getBestPdb(projectId, jobId)
+				.or(() -> {
+					Optional<String> fromDb = generationJobRepository.findBestPdbByProjectIdAndJobId(projectId, jobId);
+					fromDb.ifPresent(value -> pdbCache.putBestPdb(projectId, jobId, value));
+					return fromDb;
+				});
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<String> getFasta(Long projectId, Long jobId) {
+		return generationJobRepository.findFastaByProjectIdAndJobId(projectId, jobId);
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<String> getRecordPdb(Long projectId, Long jobId, Integer n) {
+		return pdbCache.getRecordPdb(projectId, jobId, n)
+				.or(() -> {
+					Optional<String> fromDb = generationJobRecordRepository.findPdbByProjectIdJobIdAndN(projectId, jobId, n);
+					fromDb.ifPresent(value -> pdbCache.putRecordPdb(projectId, jobId, n, value));
+					return fromDb;
+				});
 	}
 
 	@Transactional
@@ -122,53 +137,53 @@ public class GenerationJobService {
 	}
 
 	/**
-	 * Return a batch of detail records with pagination info (totalRecords, totalBatches).
+	 * Return a batch of list DTOs (no pdb) with pagination info (totalRecords, totalBatches).
 	 * batch is 0-based; size is the page size (default 50).
 	 */
 	@Transactional(readOnly = true)
 	public RecordsPageResponse findRecordsByJobIdPaginated(Long projectId, Long jobId, Integer batch, int size) {
-		Optional<GenerationJob> jobOpt = generationJobRepository.findById(jobId);
-		if (jobOpt.isEmpty() || !jobOpt.get().getProject().getId().equals(projectId)) {
+		if (generationJobRepository.findDetailByProjectIdAndJobId(projectId, jobId).isEmpty()) {
 			return new RecordsPageResponse(List.of(), 0, 0);
 		}
 		int pageSize = size > 0 ? size : 50;
 		int batchIndex = (batch != null && batch >= 0) ? batch : 0;
-		long totalRecords = generationJobRecordRepository.countByGenerationJob_Id(jobId);
+		var page = generationJobRecordRepository.findRecordsListByJobId(jobId, PageRequest.of(batchIndex, pageSize));
+		long totalRecords = page.getTotalElements();
 		int totalBatches = totalRecords == 0 ? 0 : (int) Math.ceil((double) totalRecords / pageSize);
-		List<GenerationJobRecord> records = generationJobRecordRepository
-				.findByGenerationJob_IdOrderByNAsc(jobId, PageRequest.of(batchIndex, pageSize))
-				.getContent();
-		return new RecordsPageResponse(records, totalRecords, totalBatches);
+		return new RecordsPageResponse(page.getContent(), totalRecords, totalBatches);
 	}
 
 	/**
-	 * Build CSV from all records for the job (excluding pdb, generation_job_id, n).
+	 * Build CSV from all records for the job (list DTOs, no pdb loaded).
 	 * Returns empty string if job not found or not in project.
 	 */
 	@Transactional(readOnly = true)
 	public String buildCsvFromRecords(Long projectId, Long jobId) {
-		List<GenerationJobRecord> records = findRecordsByJobId(projectId, jobId);
-		if (records.isEmpty()) {
+		if (generationJobRepository.findDetailByProjectIdAndJobId(projectId, jobId).isEmpty()) {
 			return "";
+		}
+		List<GenerationJobRecordListDto> records = generationJobRecordRepository.findRecordsListByJobIdAll(jobId);
+		if (records.isEmpty()) {
+			return "mpnn,plddt,ptm,i_ptm,pae,i_pae,rmsd,seq\n";
 		}
 		StringBuilder sb = new StringBuilder();
 		sb.append("mpnn,plddt,ptm,i_ptm,pae,i_pae,rmsd,seq\n");
-		for (GenerationJobRecord r : records) {
-			sb.append(escapeCsv(r.getMpnn()));
+		for (GenerationJobRecordListDto r : records) {
+			sb.append(escapeCsv(r.mpnn()));
 			sb.append(',');
-			sb.append(r.getPlddt() != null ? r.getPlddt() : "");
+			sb.append(r.plddt() != null ? r.plddt() : "");
 			sb.append(',');
-			sb.append(r.getPtm() != null ? r.getPtm() : "");
+			sb.append(r.ptm() != null ? r.ptm() : "");
 			sb.append(',');
-			sb.append(r.getIPtm() != null ? r.getIPtm() : "");
+			sb.append(r.iPtm() != null ? r.iPtm() : "");
 			sb.append(',');
-			sb.append(escapeCsv(r.getPae()));
+			sb.append(escapeCsv(r.pae()));
 			sb.append(',');
-			sb.append(escapeCsv(r.getIPae()));
+			sb.append(escapeCsv(r.iPae()));
 			sb.append(',');
-			sb.append(r.getRmsd() != null ? r.getRmsd() : "");
+			sb.append(r.rmsd() != null ? r.rmsd() : "");
 			sb.append(',');
-			sb.append(escapeCsv(r.getSeq()));
+			sb.append(escapeCsv(r.seq()));
 			sb.append('\n');
 		}
 		return sb.toString();
@@ -199,7 +214,7 @@ public class GenerationJobService {
 
 		GenerationJob job = new GenerationJob();
 		job.setRunId(runId);
-		job.setProject(projectService.findById(projectId));
+		job.setProject(projectService.findEntityById(projectId));
 		job.setBackbone(backbone);
 		job.setStatus(STATUS_RUNNING);
 		job.setTemperature(temperature);
@@ -281,6 +296,9 @@ public class GenerationJobService {
 				}
 			}
 			generationJobRepository.save(job);
+			// Evict cached PDBs so next read loads fresh best PDB and record PDBs from DB
+			pdbCache.evictBestPdb(projectId, job.getId());
+			pdbCache.evictRecordPdbsForJob(projectId, job.getId());
 		} else if (STATUS_ERROR.equals(status)) {
 			String errorDetails = getString(response, "error_details");
 			if (errorDetails == null) errorDetails = getString(response, "error");

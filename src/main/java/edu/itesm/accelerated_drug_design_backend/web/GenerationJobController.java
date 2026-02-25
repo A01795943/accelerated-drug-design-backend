@@ -1,6 +1,7 @@
 package edu.itesm.accelerated_drug_design_backend.web;
 
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobDetailDto;
 import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJob;
@@ -31,14 +32,30 @@ public class GenerationJobController {
 	}
 
 	@GetMapping("/{jobId}")
-	public ResponseEntity<GenerationJob> getJob(
+	public ResponseEntity<GenerationJobDetailDto> getJob(
 			@PathVariable Long projectId,
 			@PathVariable Long jobId) {
-		Optional<GenerationJob> job = generationJobService.findById(jobId);
-		if (job.isEmpty() || !job.get().getProject().getId().equals(projectId)) {
-			return ResponseEntity.notFound().build();
-		}
-		return ResponseEntity.ok(job.get());
+		return generationJobService.findDetailByProjectIdAndJobId(projectId, jobId)
+				.map(ResponseEntity::ok)
+				.orElse(ResponseEntity.notFound().build());
+	}
+
+	@GetMapping(value = "/{jobId}/best-pdb", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> getBestPdb(
+			@PathVariable Long projectId,
+			@PathVariable Long jobId) {
+		return generationJobService.getBestPdb(projectId, jobId)
+				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
+	}
+
+	@GetMapping(value = "/{jobId}/fasta", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> getFasta(
+			@PathVariable Long projectId,
+			@PathVariable Long jobId) {
+		return generationJobService.getFasta(projectId, jobId)
+				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
 	}
 
 	@GetMapping("/{jobId}/records")
@@ -49,6 +66,16 @@ public class GenerationJobController {
 			@RequestParam(required = false, defaultValue = "50") int size) {
 		RecordsPageResponse page = generationJobService.findRecordsByJobIdPaginated(projectId, jobId, batch, size);
 		return ResponseEntity.ok(page);
+	}
+
+	@GetMapping(value = "/{jobId}/records/{n}/pdb", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> getRecordPdb(
+			@PathVariable Long projectId,
+			@PathVariable Long jobId,
+			@PathVariable Integer n) {
+		return generationJobService.getRecordPdb(projectId, jobId, n)
+				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
 	}
 
 	@GetMapping(value = "/{jobId}/records/csv", produces = MediaType.TEXT_PLAIN_VALUE)
