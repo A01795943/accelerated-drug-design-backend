@@ -21,7 +21,7 @@ public class GenerateController {
 	private static final String FIXED_CONTIGS = "20-35/0 A19-127";
 	private static final String FIXED_HOTSPOTS = "A54,A56,A58,A66,A113,A115,A123,A124,A125";
 	private static final String FIXED_CHAINS_TO_REMOVE = "B";
-	private final boolean enDemo = false;
+	private final boolean enDemo = true;
 
 	private final RfdiffusionParamService service;
 
