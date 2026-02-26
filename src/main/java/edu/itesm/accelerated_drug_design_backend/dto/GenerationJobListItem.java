@@ -5,8 +5,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.Instant;
 
 /**
- * DTO for generation job list API. Includes backboneId and backboneName so the frontend
- * can show backbone as "#id name" without relying on entity lazy loading during JSON serialization.
+ * DTO for generation job list API. Excludes outputCsv, fasta and bestPdb so the list query
+ * does not load those LONGTEXT columns. Includes backboneId and backboneName for the frontend.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class GenerationJobListItem {
@@ -17,14 +17,28 @@ public class GenerationJobListItem {
 	private String error;
 	private Double temperature;
 	private Integer numSeqs;
-	private String outputCsv;
-	private String fasta;
-	private String bestPdb;
 	private Integer totalRecords;
 	private Long backboneId;
 	private String backboneName;
 	private Instant createdAt;
 	private Instant completedAt;
+
+	/** For JPQL constructor query: only list fields (no outputCsv, fasta, bestPdb). */
+	public GenerationJobListItem(Long id, String runId, String status, String error,
+			Double temperature, Integer numSeqs, Integer totalRecords,
+			Long backboneId, String backboneName, Instant createdAt, Instant completedAt) {
+		this.id = id;
+		this.runId = runId;
+		this.status = status;
+		this.error = error;
+		this.temperature = temperature;
+		this.numSeqs = numSeqs;
+		this.totalRecords = totalRecords;
+		this.backboneId = backboneId;
+		this.backboneName = backboneName;
+		this.createdAt = createdAt;
+		this.completedAt = completedAt;
+	}
 
 	public Long getId() { return id; }
 	public void setId(Long id) { this.id = id; }
@@ -38,12 +52,6 @@ public class GenerationJobListItem {
 	public void setTemperature(Double temperature) { this.temperature = temperature; }
 	public Integer getNumSeqs() { return numSeqs; }
 	public void setNumSeqs(Integer numSeqs) { this.numSeqs = numSeqs; }
-	public String getOutputCsv() { return outputCsv; }
-	public void setOutputCsv(String outputCsv) { this.outputCsv = outputCsv; }
-	public String getFasta() { return fasta; }
-	public void setFasta(String fasta) { this.fasta = fasta; }
-	public String getBestPdb() { return bestPdb; }
-	public void setBestPdb(String bestPdb) { this.bestPdb = bestPdb; }
 	public Integer getTotalRecords() { return totalRecords; }
 	public void setTotalRecords(Integer totalRecords) { this.totalRecords = totalRecords; }
 	public Long getBackboneId() { return backboneId; }

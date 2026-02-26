@@ -1,10 +1,15 @@
 package edu.itesm.accelerated_drug_design_backend.web;
 
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobDetailDto;
 import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJob;
 import edu.itesm.accelerated_drug_design_backend.service.GenerationJobService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -17,6 +22,7 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/projects/{projectId}/generation-jobs")
+@Tag(name = "Generation jobs", description = "ProteinMPNN generation jobs, records, best PDB, FASTA, CSV")
 public class GenerationJobController {
 
 	private final GenerationJobService generationJobService;
@@ -31,14 +37,37 @@ public class GenerationJobController {
 	}
 
 	@GetMapping("/{jobId}")
-	public ResponseEntity<GenerationJob> getJob(
+	@Operation(summary = "Get job detail", description = "Returns job detail (id, runId, status, error, totalRecords, backbone). Excludes best PDB/FASTA; use dedicated endpoints.")
+	@ApiResponses({
+			@ApiResponse(responseCode = "200", description = "Success"),
+			@ApiResponse(responseCode = "404", description = "Job not found"),
+			@ApiResponse(responseCode = "401", description = "Unauthorized"),
+			@ApiResponse(responseCode = "500", description = "Server error")
+	})
+	public ResponseEntity<GenerationJobDetailDto> getJob(
 			@PathVariable Long projectId,
 			@PathVariable Long jobId) {
-		Optional<GenerationJob> job = generationJobService.findById(jobId);
-		if (job.isEmpty() || !job.get().getProject().getId().equals(projectId)) {
-			return ResponseEntity.notFound().build();
-		}
-		return ResponseEntity.ok(job.get());
+		return generationJobService.findDetailByProjectIdAndJobId(projectId, jobId)
+				.map(ResponseEntity::ok)
+				.orElse(ResponseEntity.notFound().build());
+	}
+
+	@GetMapping(value = "/{jobId}/best-pdb", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> getBestPdb(
+			@PathVariable Long projectId,
+			@PathVariable Long jobId) {
+		return generationJobService.getBestPdb(projectId, jobId)
+				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
+	}
+
+	@GetMapping(value = "/{jobId}/fasta", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> getFasta(
+			@PathVariable Long projectId,
+			@PathVariable Long jobId) {
+		return generationJobService.getFasta(projectId, jobId)
+				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
 	}
 
 	@GetMapping("/{jobId}/records")
@@ -49,6 +78,16 @@ public class GenerationJobController {
 			@RequestParam(required = false, defaultValue = "50") int size) {
 		RecordsPageResponse page = generationJobService.findRecordsByJobIdPaginated(projectId, jobId, batch, size);
 		return ResponseEntity.ok(page);
+	}
+
+	@GetMapping(value = "/{jobId}/records/{n}/pdb", produces = MediaType.TEXT_PLAIN_VALUE)
+	public ResponseEntity<String> getRecordPdb(
+			@PathVariable Long projectId,
+			@PathVariable Long jobId,
+			@PathVariable Integer n) {
+		return generationJobService.getRecordPdb(projectId, jobId, n)
+				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
 	}
 
 	@GetMapping(value = "/{jobId}/records/csv", produces = MediaType.TEXT_PLAIN_VALUE)

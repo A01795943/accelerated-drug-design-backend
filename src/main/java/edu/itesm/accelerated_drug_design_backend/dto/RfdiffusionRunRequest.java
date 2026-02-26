@@ -25,6 +25,12 @@ public class RfdiffusionRunRequest {
 	@JsonProperty("num_designs")
 	private Integer numDesigns;
 
+	@JsonProperty("hotspot")
+	private String hotspot;
+
+	@JsonProperty("chain_to_remove")
+	private String chainToRemove;
+
 	public String getRunId() {
 		return runId;
 	}
@@ -71,5 +77,21 @@ public class RfdiffusionRunRequest {
 
 	public void setNumDesigns(Integer numDesigns) {
 		this.numDesigns = numDesigns;
+	}
+
+	public String getHotspot() {
+		return hotspot;
+	}
+
+	public void setHotspot(String hotspot) {
+		this.hotspot = hotspot;
+	}
+
+	public String getChainToRemove() {
+		return chainToRemove;
+	}
+
+	public void setChainToRemove(String chainToRemove) {
+		this.chainToRemove = chainToRemove;
 	}
 }

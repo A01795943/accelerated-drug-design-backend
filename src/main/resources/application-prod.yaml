@@ -1,0 +1,4 @@
+# Production profile: disable API docs (Swagger UI and OpenAPI JSON)
+app:
+  api-docs:
+    enabled: false

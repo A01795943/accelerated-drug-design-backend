@@ -143,9 +143,8 @@ CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens (user_id);
 INSERT INTO roles (name) VALUES ('USER'), ('ADMIN');
 
 -- Usuario admin con contraseña "admin" (BCrypt hash, strength 10)
--- Si el hash no coincide, la aplicación puede crear admin al arrancar (DataLoader)
 INSERT INTO users (username, email, password_hash, enabled) VALUES
-  ('admin', 'admin@admin.com', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 1);
+  ('admin', 'admin@admin.com', '$2a$10$yrDEkHToJqZbLvfZEWui3u/KUxjZVuH57anj7iDrYajMjvqthjN/2', 1);
 
 -- Asignar rol ADMIN al usuario admin (role_id 2 = ADMIN)
 INSERT INTO user_roles (user_id, role_id) VALUES (1, 2);

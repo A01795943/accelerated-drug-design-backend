@@ -201,3 +201,21 @@ export DB_PASSWORD=...
 export CORS_ORIGINS=http://localhost:4200
 ./gradlew bootRun --args='--spring.profiles.active=docker'
 ```
+
+---
+
+## API documentation (OpenAPI / Swagger UI)
+
+The backend can expose **OpenAPI 3** docs and **Swagger UI** via [springdoc-openapi](https://springdoc.org/).
+
+- **Enable/disable**: Set `app.api-docs.enabled` (default `true`). In production use profile `prod` or set `API_DOCS_ENABLED=false` so docs are not exposed.
+- **URLs** (when enabled):
+  - **Swagger UI**: [http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html) (or `/swagger-ui/index.html`)
+  - **OpenAPI JSON**: [http://localhost:8080/v3/api-docs](http://localhost:8080/v3/api-docs)
+- **Security**: The spec documents JWT Bearer auth. Use **Authorize** in Swagger UI and paste the token from `POST /api/auth/login`. The login endpoint is marked as public (no Bearer required).
+- **Build & run**:
+  ```bash
+  ./gradlew build
+  ./gradlew bootRun
+  ```
+  Then open [http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html).

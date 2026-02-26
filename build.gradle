@@ -16,21 +16,43 @@ java {
 
 repositories {
 	mavenCentral()
+	maven { url 'https://repo1.maven.org/maven2' }
+	maven { url 'https://jcenter.bintray.com' }  // legacy para openchart
 }
 
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
 	// https://mvnrepository.com/artifact/com.auth0/java-jwt
 	implementation group: 'com.auth0', name: 'java-jwt', version: '4.3.0'
+
+	// BioJava para leer PDB
+	implementation('org.biojava:biojava-structure:6.1.0') {
+		exclude group: 'org.biojava', module: 'biojava-alignment'
+		exclude group: 'org.biojava.thirdparty', module: 'forester'
+		//exclude group: 'openchart', module: 'openchart'
+	}
+
+	// JAXB for Java 21
+	//implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.2'
+	//runtimeOnly 'org.glassfish.jaxb:jaxb-runtime:4.0.5'
+
+// JAXB (javax) requerido por BioJava 6.1.0 en Java 21
+	implementation 'javax.xml.bind:jaxb-api:2.3.1'
+	runtimeOnly 'org.glassfish.jaxb:jaxb-runtime:2.3.5'
+
+// Activation (a veces necesario con JAXB 2.x en Java 11+)
+	runtimeOnly 'com.sun.activation:javax.activation:1.2.0'
+
 	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
 	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
 	runtimeOnly 'com.mysql:mysql-connector-j'
-	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+	// OpenAPI 3 + Swagger UI (disabled in prod via app.api-docs.enabled=false)
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.1'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework.security:spring-security-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 

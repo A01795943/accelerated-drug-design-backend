@@ -16,9 +16,24 @@ spring.profiles.active: local
 
 # JWT (en producción usar variable de entorno)
 app:
+  # API docs (Swagger UI + OpenAPI). Set to false in production (e.g. API_DOCS_ENABLED=false).
+  api-docs:
+    enabled: ${API_DOCS_ENABLED:true}
+    title: Accelerated Drug Design API
+    description: REST API for accelerated drug design; projects, backbones (RFdiffusion), generation jobs (ProteinMPNN).
+    version: 0.0.1-SNAPSHOT
+    # server-url: http://localhost:8080  # optional base URL in OpenAPI spec
   jwt:
     secret: ${JWT_SECRET:SLle2Cvif0rG4vaECYvx95pt2Fa0NZ2HF3kMm6N9U8wCHMXyMYgtlhFBBwLMsHBS/hF6LuNnzsxzP1I1lt39wg==}
     expiration-ms: 86400000
   # CORS: orígenes permitidos separados por coma (en Docker: CORS_ORIGINS)
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:4200,http://127.0.0.1:4200}
+
+# OpenAPI / Swagger UI (follows app.api-docs.enabled)
+springdoc:
+  api-docs:
+    enabled: ${app.api-docs.enabled:true}
+  swagger-ui:
+    enabled: ${app.api-docs.enabled:true}
+    path: /swagger-ui.html
