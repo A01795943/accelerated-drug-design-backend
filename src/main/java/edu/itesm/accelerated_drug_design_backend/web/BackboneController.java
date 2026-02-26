@@ -4,6 +4,10 @@ import edu.itesm.accelerated_drug_design_backend.dto.BackboneListDto;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateBackbonesRequest;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
 import edu.itesm.accelerated_drug_design_backend.service.BackboneService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -14,6 +18,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/projects/{projectId}/backbones")
+@Tag(name = "Backbones", description = "RFdiffusion backbones per project")
 public class BackboneController {
 
 	private final BackboneService backboneService;
@@ -45,6 +50,14 @@ public class BackboneController {
 	}
 
 	@PostMapping
+	@Operation(summary = "Create backbones", description = "Starts RFdiffusion run; creates one or more backbones (status RUNNING). Poll status via GET .../status/{runId}.")
+	@ApiResponses({
+			@ApiResponse(responseCode = "201", description = "Created"),
+			@ApiResponse(responseCode = "400", description = "Invalid request (e.g. backbone not ready)"),
+			@ApiResponse(responseCode = "401", description = "Unauthorized"),
+			@ApiResponse(responseCode = "404", description = "Project not found"),
+			@ApiResponse(responseCode = "500", description = "Server error")
+	})
 	public ResponseEntity<List<Backbone>> createBackbones(
 			@PathVariable Long projectId,
 			@Valid @RequestBody CreateBackbonesRequest request) {

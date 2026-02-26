@@ -6,6 +6,10 @@ import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJob;
 import edu.itesm.accelerated_drug_design_backend.service.GenerationJobService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -18,6 +22,7 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/projects/{projectId}/generation-jobs")
+@Tag(name = "Generation jobs", description = "ProteinMPNN generation jobs, records, best PDB, FASTA, CSV")
 public class GenerationJobController {
 
 	private final GenerationJobService generationJobService;
@@ -32,6 +37,13 @@ public class GenerationJobController {
 	}
 
 	@GetMapping("/{jobId}")
+	@Operation(summary = "Get job detail", description = "Returns job detail (id, runId, status, error, totalRecords, backbone). Excludes best PDB/FASTA; use dedicated endpoints.")
+	@ApiResponses({
+			@ApiResponse(responseCode = "200", description = "Success"),
+			@ApiResponse(responseCode = "404", description = "Job not found"),
+			@ApiResponse(responseCode = "401", description = "Unauthorized"),
+			@ApiResponse(responseCode = "500", description = "Server error")
+	})
 	public ResponseEntity<GenerationJobDetailDto> getJob(
 			@PathVariable Long projectId,
 			@PathVariable Long jobId) {
