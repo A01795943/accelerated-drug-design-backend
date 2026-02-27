@@ -39,19 +39,22 @@ public class GenerationJobService {
 	private final ProjectService projectService;
 	private final CoreSystemInterface coreSystem;
 	private final PdbCacheService pdbCache;
+	private final EDAService edaService;
 
 	public GenerationJobService(GenerationJobRepository generationJobRepository,
 			GenerationJobRecordRepository generationJobRecordRepository,
 			BackboneRepository backboneRepository,
 			ProjectService projectService,
 			CoreSystemInterface coreSystem,
-			PdbCacheService pdbCache) {
+			PdbCacheService pdbCache,
+			EDAService edaService) {
 		this.generationJobRepository = generationJobRepository;
 		this.generationJobRecordRepository = generationJobRecordRepository;
 		this.backboneRepository = backboneRepository;
 		this.projectService = projectService;
 		this.coreSystem = coreSystem;
 		this.pdbCache = pdbCache;
+		this.edaService = edaService;
 	}
 
 	@Transactional(readOnly = true)
@@ -64,10 +67,22 @@ public class GenerationJobService {
 		return list;
 	}
 
-	/** Returns list items without outputCsv, fasta or bestPdb (query selects only list columns). */
+	/** Returns list items without outputCsv, fasta or bestPdb (query selects only list columns). Enriches with dataset quality for completed jobs. */
 	@Transactional(readOnly = true)
 	public List<GenerationJobListItem> findListItemsByProjectId(Long projectId) {
-		return generationJobRepository.findListItemsByProjectId(projectId);
+		List<GenerationJobListItem> items = generationJobRepository.findListItemsByProjectId(projectId);
+		for (GenerationJobListItem item : items) {
+			if (STATUS_COMPLETED.equals(item.getStatus())) {
+				try {
+					double q = edaService.getDatasetQuality(projectId, item.getId());
+					item.setQuality(q);
+				} catch (Exception e) {
+					log.debug("Could not compute quality for job {}: {}", item.getId(), e.getMessage());
+					item.setQuality(null);
+				}
+			}
+		}
+		return items;
 	}
 
 	public Optional<GenerationJob> findByProjectIdAndRunId(Long projectId, String runId) {

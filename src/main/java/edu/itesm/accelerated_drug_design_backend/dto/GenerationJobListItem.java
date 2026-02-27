@@ -22,6 +22,8 @@ public class GenerationJobListItem {
 	private String backboneName;
 	private Instant createdAt;
 	private Instant completedAt;
+	/** Global dataset quality 0–1 (from EDA), null if not computed or not applicable. */
+	private Double quality;
 
 	/** For JPQL constructor query: only list fields (no outputCsv, fasta, bestPdb). */
 	public GenerationJobListItem(Long id, String runId, String status, String error,
@@ -62,4 +64,6 @@ public class GenerationJobListItem {
 	public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 	public Instant getCompletedAt() { return completedAt; }
 	public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
+	public Double getQuality() { return quality; }
+	public void setQuality(Double quality) { this.quality = quality; }
 }

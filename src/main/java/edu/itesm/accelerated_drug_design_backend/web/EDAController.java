@@ -31,6 +31,20 @@ public class EDAController {
 		this.edaService = edaService;
 	}
 
+	@GetMapping("/dataset-quality")
+	@Operation(summary = "Dataset quality", description = "Returns a global quality index (0–1) for the job dataset based on weighted metrics.")
+	@ApiResponses({
+			@ApiResponse(responseCode = "200", description = "Success"),
+			@ApiResponse(responseCode = "404", description = "Job not found"),
+			@ApiResponse(responseCode = "500", description = "Server error")
+	})
+	public ResponseEntity<Map<String, Double>> getDatasetQuality(
+			@Parameter(description = "Project ID") @PathVariable Long projectId,
+			@Parameter(description = "Generation job ID") @PathVariable Long jobId) {
+		double quality = edaService.getDatasetQuality(projectId, jobId);
+		return ResponseEntity.ok(Map.of("quality", quality));
+	}
+
 	@GetMapping("/descriptive-stats")
 	@Operation(summary = "Descriptive statistics", description = "Returns mean, std, min, 25%, 50%, 75%, max, skew and kurtosis for ptm, i_ptm, pae, i_pae, plddt, rmsd, mpnn.")
 	@ApiResponses({

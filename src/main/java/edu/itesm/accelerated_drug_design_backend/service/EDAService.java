@@ -23,7 +23,7 @@ public class EDAService {
 	private final GenerationJobRecordRepository generationJobRecordRepository;
 
 	public EDAService(GenerationJobRepository generationJobRepository,
-			GenerationJobRecordRepository generationJobRecordRepository) {
+					  GenerationJobRecordRepository generationJobRecordRepository) {
 		this.generationJobRepository = generationJobRepository;
 		this.generationJobRecordRepository = generationJobRecordRepository;
 	}
@@ -76,31 +76,187 @@ public class EDAService {
 		Map<String, DescriptiveStatsDto> result = new LinkedHashMap<>();
 		for (String metric : STATS_METRIC_ORDER) {
 			List<Double> values = getNumericValues(projectId, jobId, metric);
-			result.put(metric, computeDescriptiveStats(values));
+			result.put(metric, computeDescriptiveStats(values, metric)); // <-- ahora calcula quality
 		}
 		return result;
 	}
 
-	private static DescriptiveStatsDto computeDescriptiveStats(List<Double> values) {
-		if (values == null || values.isEmpty()) {
-			return new DescriptiveStatsDto(null, null, null, null, null, null, null, null, null);
+	@Transactional(readOnly = true)
+	public double getDatasetQuality(Long projectId, Long jobId) {
+		validateJobBelongsToProject(projectId, jobId);
+
+		double weightedSum = 0.0;
+		double totalWeight = 0.0;
+
+		// Pesos globales (puedes ajustar si quieres)
+		Map<String, Double> weights = Map.of(
+				"ptm", 0.15,
+				"plddt", 0.15,
+				"pae", 0.15,
+				"rmsd", 0.15,
+				"i_ptm", 0.20,
+				"i_pae", 0.20,
+				"mpnn", 0.00
+		);
+
+		for (String metric : STATS_METRIC_ORDER) {
+
+			List<Double> values = getNumericValues(projectId, jobId, metric);
+			DescriptiveStatsDto stats = computeDescriptiveStats(values, metric);
+
+			Double quality = stats.quality();
+			if (quality == null) continue;
+
+			double w = weights.getOrDefault(metric, 0.0);
+			if (w <= 0.0) continue;
+
+			weightedSum += w * quality;
+			totalWeight += w;
 		}
+
+		if (totalWeight == 0.0) return 0.0;
+
+		return (weightedSum / totalWeight) / 100;
+	}
+
+	// -------------------- Quality algorithm --------------------
+
+	private enum Direction { HIGHER_BETTER, LOWER_BETTER }
+
+	/**
+	 * Ajusta MPNN según el significado real de tu score:
+	 * - si es energy/neg loglik => LOWER_BETTER (default aquí)
+	 * - si es score donde alto es mejor => HIGHER_BETTER
+	 */
+	private static Direction directionForMetric(String metric) {
+		return switch (metric) {
+			case "ptm", "i_ptm", "plddt" -> Direction.HIGHER_BETTER;
+			case "pae", "i_pae", "rmsd" -> Direction.LOWER_BETTER;
+			case "mpnn" -> Direction.LOWER_BETTER; // <- cambia si aplica
+			default -> throw new IllegalArgumentException("Unknown metric: " + metric);
+		};
+	}
+
+	// Pesos internos del índice por columna
+	private static final double W_PERF = 0.60;
+	private static final double W_STAB = 0.25;
+	private static final double W_SHAPE = 0.15;
+
+	// Parámetros suavizadores
+	private static final double TAU_CV = 0.25;  // mayor => castigo CV más suave
+	private static final double S0_SKEW = 1.0;  // mayor => castigo skew más suave
+	private static final double K0_KURT = 2.0;  // mayor => castigo kurtosis más suave (kurtosis aquí es EXCESS: ideal 0)
+
+	private static double computeQualityIndex(String metric, DescriptiveStatsDto s) {
+		if (s == null || s.mean() == null || s.min() == null || s.max() == null) return 0.0;
+
+		Direction dir = directionForMetric(metric);
+
+		double mean = s.mean();
+		Double median = s.p50();
+		double min = s.min();
+		double max = s.max();
+
+		// Centro robusto (si hay mediana)
+		double center = (median != null) ? (0.7 * median + 0.3 * mean) : mean;
+
+		// A) desempeño relativo dentro del rango observado
+		double sPerf;
+		if (Double.compare(max, min) == 0) {
+			sPerf = 1.0;
+		} else {
+			double range = max - min;
+			if (Math.abs(range) < 1e-12) range = 1e-12;
+			sPerf = (dir == Direction.HIGHER_BETTER)
+					? clamp01((center - min) / range)
+					: clamp01((max - center) / range);
+		}
+
+		// B) estabilidad por CV = std / |mean|
+		double cv = computeCv(s.std(), mean);
+		double sStab = clamp01(Math.exp(-(cv / TAU_CV)));
+
+		// C) forma: skew ~ 0, excess kurtosis ~ 0
+		double skew = (s.skew() != null) ? s.skew() : 0.0;
+		double kurtExcess = (s.kurtosis() != null) ? s.kurtosis() : 0.0;
+
+		double sSkew = clamp01(Math.exp(-(Math.abs(skew) / S0_SKEW)));
+		double sKurt = clamp01(Math.exp(-(Math.abs(kurtExcess) / K0_KURT)));
+		double sShape = clamp01(Math.sqrt(sSkew * sKurt));
+
+		double q = 100.0 * (W_PERF * sPerf + W_STAB * sStab + W_SHAPE * sShape);
+		return clamp(q, 0.0, 100.0);
+	}
+
+	private static double computeCv(Double std, double mean) {
+		if (std == null) return 10.0;
+		double absMean = Math.abs(mean);
+		if (absMean < 1e-12) return 10.0;
+		return std / absMean;
+	}
+
+	private static double clamp01(double x) { return clamp(x, 0.0, 1.0); }
+
+	private static double clamp(double x, double lo, double hi) {
+		if (x < lo) return lo;
+		if (x > hi) return hi;
+		return x;
+	}
+
+	// -------------------- Stats computation (ahora añade quality) --------------------
+
+	private static DescriptiveStatsDto computeDescriptiveStats(List<Double> values, String metric) {
+		if (values == null || values.isEmpty()) {
+			return new DescriptiveStatsDto(null, null, null, null, null, null, null, null, null, null);
+		}
+
 		List<Double> sorted = new ArrayList<>(values);
 		sorted.sort(Double::compareTo);
 		int n = sorted.size();
+
 		double mean = sorted.stream().mapToDouble(Double::doubleValue).sum() / n;
 		double variance = sorted.stream().mapToDouble(v -> (v - mean) * (v - mean)).sum() / n;
 		double std = Math.sqrt(variance);
+
 		double min = sorted.get(0);
 		double max = sorted.get(n - 1);
+
 		double p25 = percentile(sorted, 25);
 		double p50 = percentile(sorted, 50);
 		double p75 = percentile(sorted, 75);
+
 		double skew = std > 0 ? sorted.stream().mapToDouble(v -> Math.pow((v - mean) / std, 3)).sum() / n : Double.NaN;
+
+		// Excess kurtosis (ideal 0.0)
 		double kurtosis = std > 0 ? sorted.stream().mapToDouble(v -> Math.pow((v - mean) / std, 4)).sum() / n - 3.0 : Double.NaN;
+
+		DescriptiveStatsDto base = new DescriptiveStatsDto(
+				mean,
+				std > 0 ? std : null,
+				min,
+				p25,
+				p50,
+				p75,
+				max,
+				!Double.isNaN(skew) ? skew : null,
+				!Double.isNaN(kurtosis) ? kurtosis : null,
+				null
+		);
+
+		double quality = computeQualityIndex(metric, base);
+
 		return new DescriptiveStatsDto(
-				mean, std > 0 ? std : null, min, p25, p50, p75, max,
-				!Double.isNaN(skew) ? skew : null, !Double.isNaN(kurtosis) ? kurtosis : null);
+				base.mean(),
+				base.std(),
+				base.min(),
+				base.p25(),
+				base.p50(),
+				base.p75(),
+				base.max(),
+				base.skew(),
+				base.kurtosis(),
+				quality
+		);
 	}
 
 	private static double percentile(List<Double> sorted, double p) {
@@ -148,10 +304,6 @@ public class EDAService {
 		return result;
 	}
 
-	/**
-	 * Asigna un valor a un bin (include_lowest: primer intervalo incluye el borde izquierdo).
-	 * bins = [b0, b1, ..., bk] -> intervalos [b0,b1), [b1,b2), ..., [b_{k-1}, bk] (último cerrado a la derecha).
-	 */
 	private int binIndex(double value, List<Double> bins, int numCategories) {
 		for (int i = 0; i < numCategories; i++) {
 			double low = bins.get(i);

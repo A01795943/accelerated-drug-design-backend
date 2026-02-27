@@ -15,5 +15,6 @@ public record DescriptiveStatsDto(
 	Double p75,
 	Double max,
 	Double skew,
-	Double kurtosis
+	Double kurtosis,
+	Double quality
 ) {}
