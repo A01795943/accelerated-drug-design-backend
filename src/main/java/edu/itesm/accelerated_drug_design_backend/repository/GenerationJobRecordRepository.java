@@ -41,4 +41,32 @@ public interface GenerationJobRecordRepository extends JpaRepository<GenerationJ
 	long countByGenerationJob_Id(Long generationJobId);
 
 	void deleteByGenerationJob_Id(Long generationJobId);
+
+	/** Solo columna plddt, para EDA. Job debe pertenecer al proyecto. */
+	@Query("SELECT r.plddt FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")
+	List<Double> findPlddtByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT r.ptm FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")
+	List<Double> findPtmByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT r.iPtm FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")
+	List<Double> findIPtmByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT r.rmsd FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")
+	List<Double> findRmsdByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT r.mpnn FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")
+	List<String> findMpnnByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT r.pae FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")
+	List<String> findPaeByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT r.iPae FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")
+	List<String> findIPaeByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT max(r.ptm) FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId")
+	Double findMaxPtmByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
+
+	@Query("SELECT max(r.iPtm) FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId")
+	Double findMaxIPtmByProjectIdAndJobId(@Param("projectId") Long projectId, @Param("jobId") Long jobId);
 }
