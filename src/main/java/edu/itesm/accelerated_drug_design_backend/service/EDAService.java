@@ -32,6 +32,16 @@ public class EDAService {
 	public DistributionResponse getDistribution(Long projectId, Long jobId, String metric) {
 		validateJobBelongsToProject(projectId, jobId);
 		List<Double> values = getNumericValues(projectId, jobId, metric);
+		return buildDistribution(metric, values);
+	}
+
+	@Transactional(readOnly = true)
+	public DistributionResponse getDistributionForJobs(Long projectId, List<Long> jobIds, String metric) {
+		List<Double> values = getNumericValuesForJobs(projectId, jobIds, metric);
+		return buildDistribution(metric, values);
+	}
+
+	private DistributionResponse buildDistribution(String metric, List<Double> values) {
 		if (values.isEmpty()) {
 			return new DistributionResponse(metric, List.of(), null, null);
 		}
@@ -44,6 +54,16 @@ public class EDAService {
 	public BinsResponse getBins(Long projectId, Long jobId, String metric, BinsRequest request) {
 		validateJobBelongsToProject(projectId, jobId);
 		List<Double> values = getNumericValues(projectId, jobId, metric);
+		return buildBinsResponse(metric, values, request);
+	}
+
+	@Transactional(readOnly = true)
+	public BinsResponse getBinsForJobs(Long projectId, List<Long> jobIds, BinsRequest request, String metric) {
+		List<Double> values = getNumericValuesForJobs(projectId, jobIds, metric);
+		return buildBinsResponse(metric, values, request);
+	}
+
+	private BinsResponse buildBinsResponse(String metric, List<Double> values, BinsRequest request) {
 		List<Double> bins = request.bins();
 		List<String> labels = request.labels();
 		if (labels.size() != bins.size() - 1) {
@@ -81,6 +101,23 @@ public class EDAService {
 		return result;
 	}
 
+	/**
+	 * Descriptive stats agregadas para múltiples jobs del mismo proyecto. Usa todos los registros
+	 * de los jobs seleccionados como si fueran un solo dataset.
+	 */
+	@Transactional(readOnly = true)
+	public Map<String, DescriptiveStatsDto> getDescriptiveStatsForJobs(Long projectId, List<Long> jobIds) {
+		if (jobIds == null || jobIds.isEmpty()) {
+			return Map.of();
+		}
+		Map<String, DescriptiveStatsDto> result = new LinkedHashMap<>();
+		for (String metric : STATS_METRIC_ORDER) {
+			List<Double> values = getNumericValuesForJobs(projectId, jobIds, metric);
+			result.put(metric, computeDescriptiveStats(values, metric));
+		}
+		return result;
+	}
+
 	@Transactional(readOnly = true)
 	public double getDatasetQuality(Long projectId, Long jobId) {
 		validateJobBelongsToProject(projectId, jobId);
@@ -102,6 +139,46 @@ public class EDAService {
 		for (String metric : STATS_METRIC_ORDER) {
 
 			List<Double> values = getNumericValues(projectId, jobId, metric);
+			DescriptiveStatsDto stats = computeDescriptiveStats(values, metric);
+
+			Double quality = stats.quality();
+			if (quality == null) continue;
+
+			double w = weights.getOrDefault(metric, 0.0);
+			if (w <= 0.0) continue;
+
+			weightedSum += w * quality;
+			totalWeight += w;
+		}
+
+		if (totalWeight == 0.0) return 0.0;
+
+		return (weightedSum / totalWeight) / 100;
+	}
+
+	/**
+	 * Índice de calidad global (0–1) para un conjunto de jobs.
+	 * Toma todas las métricas de todos los jobs seleccionados y aplica el mismo esquema de pesos.
+	 */
+	@Transactional(readOnly = true)
+	public double getDatasetQualityForJobs(Long projectId, List<Long> jobIds) {
+		if (jobIds == null || jobIds.isEmpty()) return 0.0;
+
+		double weightedSum = 0.0;
+		double totalWeight = 0.0;
+
+		Map<String, Double> weights = Map.of(
+				"ptm", 0.15,
+				"plddt", 0.15,
+				"pae", 0.15,
+				"rmsd", 0.15,
+				"i_ptm", 0.20,
+				"i_pae", 0.20,
+				"mpnn", 0.00
+		);
+
+		for (String metric : STATS_METRIC_ORDER) {
+			List<Double> values = getNumericValuesForJobs(projectId, jobIds, metric);
 			DescriptiveStatsDto stats = computeDescriptiveStats(values, metric);
 
 			Double quality = stats.quality();
@@ -273,6 +350,20 @@ public class EDAService {
 		if (generationJobRepository.findDetailByProjectIdAndJobId(projectId, jobId).isEmpty()) {
 			throw new jakarta.persistence.EntityNotFoundException("Generation job not found or does not belong to project");
 		}
+	}
+
+	/**
+	 * Helper para múltiples jobs: concatena todos los valores numéricos válidos para las métricas
+	 * indicadas, validando que cada job pertenezca al proyecto.
+	 */
+	private List<Double> getNumericValuesForJobs(Long projectId, List<Long> jobIds, String metric) {
+		List<Double> all = new ArrayList<>();
+		for (Long jobId : jobIds) {
+			if (jobId == null) continue;
+			validateJobBelongsToProject(projectId, jobId);
+			all.addAll(getNumericValues(projectId, jobId, metric));
+		}
+		return all;
 	}
 
 	private List<Double> getNumericValues(Long projectId, Long jobId, String metric) {

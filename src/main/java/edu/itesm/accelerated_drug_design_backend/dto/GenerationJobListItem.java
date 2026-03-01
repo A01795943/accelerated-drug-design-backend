@@ -24,6 +24,10 @@ public class GenerationJobListItem {
 	private Instant completedAt;
 	/** Global dataset quality 0–1 (from EDA), null if not computed or not applicable. */
 	private Double quality;
+	/** Max pTM across records for this job. */
+	private Double maxPtm;
+	/** Max iPTM across records for this job. */
+	private Double maxIPtm;
 
 	/** For JPQL constructor query: only list fields (no outputCsv, fasta, bestPdb). */
 	public GenerationJobListItem(Long id, String runId, String status, String error,
@@ -66,4 +70,8 @@ public class GenerationJobListItem {
 	public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
 	public Double getQuality() { return quality; }
 	public void setQuality(Double quality) { this.quality = quality; }
+	public Double getMaxPtm() { return maxPtm; }
+	public void setMaxPtm(Double maxPtm) { this.maxPtm = maxPtm; }
+	public Double getMaxIPtm() { return maxIPtm; }
+	public void setMaxIPtm(Double maxIPtm) { this.maxIPtm = maxIPtm; }
 }

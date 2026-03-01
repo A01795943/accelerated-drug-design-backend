@@ -72,6 +72,18 @@ public class GenerationJobService {
 	public List<GenerationJobListItem> findListItemsByProjectId(Long projectId) {
 		List<GenerationJobListItem> items = generationJobRepository.findListItemsByProjectId(projectId);
 		for (GenerationJobListItem item : items) {
+			// Max pTM / iPTM per job
+			try {
+				Double maxPtm = generationJobRecordRepository.findMaxPtmByProjectIdAndJobId(projectId, item.getId());
+				item.setMaxPtm(maxPtm);
+				Double maxIPtm = generationJobRecordRepository.findMaxIPtmByProjectIdAndJobId(projectId, item.getId());
+				item.setMaxIPtm(maxIPtm);
+			} catch (Exception e) {
+				log.debug("Could not compute max pTM/iPTM for job {}: {}", item.getId(), e.getMessage());
+				item.setMaxPtm(null);
+				item.setMaxIPtm(null);
+			}
+
 			if (STATUS_COMPLETED.equals(item.getStatus())) {
 				try {
 					double q = edaService.getDatasetQuality(projectId, item.getId());
