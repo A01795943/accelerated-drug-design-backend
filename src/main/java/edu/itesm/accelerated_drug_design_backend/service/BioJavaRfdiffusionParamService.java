@@ -26,7 +26,7 @@ public class BioJavaRfdiffusionParamService implements RfdiffusionParamService {
         this.pdbCache = pdbCache;
     }
 
-    // Defaults (igual a tu script)
+    // Defaults
     private final int binderMin = 12;
     private final int binderMax = 30;
     private final int maxHotspots = 7;
@@ -68,7 +68,7 @@ public class BioJavaRfdiffusionParamService implements RfdiffusionParamService {
         String complex = getComplex(projectId);
         boolean hasComplex = StringUtils.hasText(complex);
         boolean hasTarget = StringUtils.hasText(target);
-
+        hasComplex = false;
         if (!hasComplex && !hasTarget) {
             throw new IllegalStateException("Project has no PDB content in target/complex fields.");
         }

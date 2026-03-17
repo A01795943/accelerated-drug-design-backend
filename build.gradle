@@ -31,7 +31,7 @@ dependencies {
 
 	// BioJava para leer PDB
 	implementation('org.biojava:biojava-structure:6.1.0') {
-		exclude group: 'org.biojava', module: 'biojava-alignment'
+		//exclude group: 'org.biojava', module: 'biojava-alignment'
 		exclude group: 'org.biojava.thirdparty', module: 'forester'
 		//exclude group: 'openchart', module: 'openchart'
 	}
