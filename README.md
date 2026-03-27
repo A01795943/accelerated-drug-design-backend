@@ -1,5 +1,8 @@
 # Backend — Drug Accelerator
 
+## Requisitos
+Requisitos: Java 21+, Gradle. Perfil por defecto: local (BD y core en application-local.yaml).
+
 API del proyecto **Drug Accelerator** (diseño acelerado de fármacos). Expone los endpoints que usa el frontend para proyectos, backbones (RFdiffusion) y trabajos de generación de secuencias.
 
 ## Qué hace este backend
