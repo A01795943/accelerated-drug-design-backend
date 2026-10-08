@@ -6,6 +6,7 @@ import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobRecordId;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -41,6 +42,13 @@ public interface GenerationJobRecordRepository extends JpaRepository<GenerationJ
 	long countByGenerationJob_Id(Long generationJobId);
 
 	void deleteByGenerationJob_Id(Long generationJobId);
+
+	@Modifying(clearAutomatically = true, flushAutomatically = true)
+	@Query("""
+			DELETE FROM GenerationJobRecord r
+			WHERE r.generationJobId = :jobId AND r.n >= :fromN AND r.n < :toN
+			""")
+	int deleteByJobIdAndNRange(@Param("jobId") Long jobId, @Param("fromN") int fromN, @Param("toN") int toN);
 
 	/** Solo columna plddt, para EDA. Job debe pertenecer al proyecto. */
 	@Query("SELECT r.plddt FROM GenerationJobRecord r JOIN r.generationJob j WHERE j.id = :jobId AND j.project.id = :projectId ORDER BY r.n ASC")

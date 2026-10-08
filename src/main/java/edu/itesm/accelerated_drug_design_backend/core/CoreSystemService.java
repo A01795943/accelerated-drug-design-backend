@@ -92,6 +92,15 @@ public class CoreSystemService implements CoreSystemInterface {
 			@SuppressWarnings("unchecked")
 			Map<String, Object> body = client(instance).getForObject(url, Map.class);
 			return body != null ? body : new LinkedHashMap<>();
+		} catch (org.springframework.web.client.HttpStatusCodeException e) {
+			if (e.getStatusCode().value() == 404) {
+				Map<String, Object> missing = new LinkedHashMap<>();
+				missing.put("status", "ERROR");
+				missing.put("error_details", "404 not found");
+				return missing;
+			}
+			log.warn("Failed to get MPNN status from {}: {}", url, e.getMessage());
+			return null;
 		} catch (Exception e) {
 			log.warn("Failed to get MPNN status from {}: {}", url, e.getMessage(), e);
 			return null;

@@ -9,9 +9,12 @@ import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobRecordListDto;
 import edu.itesm.accelerated_drug_design_backend.dto.ProteinMpnnRunRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
+import edu.itesm.accelerated_drug_design_backend.entity.CoreInstance;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJob;
+import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobRecord;
 import edu.itesm.accelerated_drug_design_backend.repository.BackboneRepository;
+import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobMinibatchRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRecordRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRepository;
 import org.slf4j.Logger;
@@ -32,29 +35,39 @@ public class GenerationJobService {
 	private static final String STATUS_COMPLETED = "COMPLETED";
 	private static final String STATUS_ERROR = "ERROR";
 	private static final String STATUS_RUNNING = "RUNNING";
+	private static final String STATUS_QUEUED = GenerationJob.STATUS_QUEUED;
 
 	private final GenerationJobRepository generationJobRepository;
 	private final GenerationJobRecordRepository generationJobRecordRepository;
+	private final GenerationJobMinibatchRepository minibatchRepository;
 	private final BackboneRepository backboneRepository;
 	private final ProjectService projectService;
 	private final CoreSystemInterface coreSystem;
+	private final CoreInstanceResolver coreInstanceResolver;
 	private final PdbCacheService pdbCache;
 	private final EDAService edaService;
+	private final int minibatchSize;
 
 	public GenerationJobService(GenerationJobRepository generationJobRepository,
 			GenerationJobRecordRepository generationJobRecordRepository,
+			GenerationJobMinibatchRepository minibatchRepository,
 			BackboneRepository backboneRepository,
 			ProjectService projectService,
 			CoreSystemInterface coreSystem,
+			CoreInstanceResolver coreInstanceResolver,
 			PdbCacheService pdbCache,
-			EDAService edaService) {
+			EDAService edaService,
+			@org.springframework.beans.factory.annotation.Value("${app.generation.minibatch-size:100}") int minibatchSize) {
 		this.generationJobRepository = generationJobRepository;
 		this.generationJobRecordRepository = generationJobRecordRepository;
+		this.minibatchRepository = minibatchRepository;
 		this.backboneRepository = backboneRepository;
 		this.projectService = projectService;
 		this.coreSystem = coreSystem;
+		this.coreInstanceResolver = coreInstanceResolver;
 		this.pdbCache = pdbCache;
 		this.edaService = edaService;
+		this.minibatchSize = Math.max(1, minibatchSize);
 	}
 
 	@Transactional(readOnly = true)
@@ -142,6 +155,7 @@ public class GenerationJobService {
 				});
 	}
 
+	/** Core has no cancel API; deleting the job drops minibatch rows via FK cascade and leaves the remote run running. */
 	@Transactional
 	public boolean deleteByProjectIdAndJobId(Long projectId, Long jobId) {
 		Optional<GenerationJob> opt = generationJobRepository.findById(jobId);
@@ -238,47 +252,63 @@ public class GenerationJobService {
 		String runId = generateRunID();
 		Double temperature = request.getTemperature() != null ? request.getTemperature() : 0.1;
 		int numSeqs = request.getNumSeqs() != null ? Math.max(1, request.getNumSeqs()) : 16;
+		int chunks = (numSeqs + minibatchSize - 1) / minibatchSize;
 
 		GenerationJob job = new GenerationJob();
 		job.setRunId(runId);
 		job.setProject(projectService.findEntityById(projectId));
 		job.setBackbone(backbone);
+		job.setCoreInstanceId(null);
 		job.setStatus(STATUS_RUNNING);
 		job.setTemperature(temperature);
 		job.setNumSeqs(numSeqs);
 		job.setCreatedAt(Instant.now());
+		job.setTotalMinibatches(chunks);
+		job.setCompletedMinibatches(0);
 		job = generationJobRepository.save(job);
 
-		ProteinMpnnRunRequest coreRequest = new ProteinMpnnRunRequest();
-		coreRequest.setRunId(runId);
-		coreRequest.setRunName(runId);
-		coreRequest.setPdbContent(backbone.getStructure() != null ? backbone.getStructure() : "");
-		coreRequest.setContigs(backbone.getContigs() != null ? backbone.getContigs() : "");
-		coreRequest.setNumSeqs(numSeqs);
-		coreRequest.setMpnnSamplingTemp(temperature);
-		coreRequest.setUseAlphafold(true);
-
-		try {
-			coreSystem.triggerMpnn(coreRequest);
-		} catch (Exception e) {
-			String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-			job.setStatus(STATUS_ERROR);
-			job.setError(errMsg);
-			job.setCompletedAt(Instant.now());
-			job = generationJobRepository.save(job);
-			log.warn("Core MPNN call failed for runId={}: {}", runId, errMsg, e);
+		for (int idx = 0; idx < chunks; idx++) {
+			int offset = idx * minibatchSize;
+			int count = Math.min(minibatchSize, numSeqs - offset);
+			GenerationJobMinibatch minibatch = new GenerationJobMinibatch();
+			minibatch.setGenerationJobId(job.getId());
+			minibatch.setIdx(idx);
+			minibatch.setNOffset(offset);
+			minibatch.setNumSeqs(count);
+			minibatch.setRunId(runId + "_m" + idx);
+			minibatch.setStatus(GenerationJobMinibatch.STATUS_PENDING);
+			minibatch.setAttempts(0);
+			minibatchRepository.save(minibatch);
 		}
 		return job;
 	}
 
 	@Transactional
 	public GenerationJob checkRunStatus(Long projectId, String runId) {
+		return checkRunStatus(projectId, runId, null);
+	}
+
+	@Transactional
+	public GenerationJob checkRunStatus(Long projectId, String runId, CoreInstance instanceOverride) {
 		GenerationJob job = generationJobRepository.findByProject_IdAndRunId(projectId, runId).orElse(null);
 		if (job == null) {
 			return null;
 		}
+		if (job.getTotalMinibatches() != null) {
+			return job;
+		}
+		if (instanceOverride == null && STATUS_QUEUED.equals(job.getStatus())) {
+			return job;
+		}
 
-		Map<String, Object> response = coreSystem.getMpnnStatus(runId);
+		CoreInstance instance = instanceOverride != null
+				? instanceOverride
+				: resolveAssignedInstance(job.getCoreInstanceId());
+		if (instance == null) {
+			return job;
+		}
+
+		Map<String, Object> response = coreSystem.getMpnnStatus(instance, runId);
 		if (response == null) {
 			return job;
 		}
@@ -289,6 +319,9 @@ public class GenerationJobService {
 		}
 		status = status.toUpperCase().strip();
 		job.setStatus(status);
+		if (job.getCoreInstanceId() == null && instance.getId() != null) {
+			job.setCoreInstanceId(instance.getId());
+		}
 
 		if (STATUS_COMPLETED.equals(status)) {
 			// Summary: core returns summary.fasta_content, summary.best_pdb_content (and top-level output_fasta)
@@ -317,9 +350,9 @@ public class GenerationJobService {
 			// Core detail is on GET /run/mpnn/status/{run_id}/detail?batch=N; fetch each batch and save records
 			int batches = totalBatches != null && totalBatches > 0 ? totalBatches : 0;
 			for (int b = 0; b < batches; b++) {
-				Map<String, Object> detailResponse = coreSystem.getMpnnStatusDetail(runId, b);
+				Map<String, Object> detailResponse = coreSystem.getMpnnStatusDetail(instance, runId, b);
 				if (detailResponse != null) {
-					saveDetailRecordsFromResponse(job, detailResponse, fastaContent);
+					saveDetailRecordsFromResponse(job, detailResponse, fastaContent, 0);
 				}
 			}
 			generationJobRepository.save(job);
@@ -342,8 +375,72 @@ public class GenerationJobService {
 		return job;
 	}
 
+	private CoreInstance resolveAssignedInstance(Long coreInstanceId) {
+		if (coreInstanceId == null) {
+			return null;
+		}
+		return coreInstanceResolver.findById(coreInstanceId).orElse(null);
+	}
+
+	@Transactional(readOnly = true)
+	public List<GenerationJob> findQueuedReady(Instant now) {
+		return generationJobRepository.findQueuedReady(STATUS_QUEUED, now);
+	}
+
+	@Transactional
+	public int markRunningIfQueued(String runId, Long instanceId) {
+		return generationJobRepository.markRunningIfQueued(runId, instanceId, STATUS_QUEUED, STATUS_RUNNING);
+	}
+
+	public void triggerQueuedMpnn(String runId, CoreInstance instance) {
+		GenerationJob job = generationJobRepository.findByRunId(runId)
+				.orElseThrow(() -> new IllegalStateException("No generation job for runId=" + runId));
+		Backbone backbone = job.getBackbone();
+		ProteinMpnnRunRequest coreRequest = new ProteinMpnnRunRequest();
+		coreRequest.setRunId(runId);
+		coreRequest.setRunName(runId);
+		coreRequest.setPdbContent(backbone.getStructure() != null ? backbone.getStructure() : "");
+		coreRequest.setContigs(backbone.getContigs() != null ? backbone.getContigs() : "");
+		coreRequest.setNumSeqs(job.getNumSeqs() != null ? job.getNumSeqs() : 16);
+		coreRequest.setMpnnSamplingTemp(job.getTemperature() != null ? job.getTemperature() : 0.1);
+		coreRequest.setUseAlphafold(true);
+		coreSystem.triggerMpnn(instance, coreRequest);
+	}
+
+	@Transactional
+	public void requeueOrFail(String runId, String error, int maxAttempts, Instant nextDispatchAt) {
+		GenerationJob job = generationJobRepository.findByRunId(runId).orElse(null);
+		if (job == null) {
+			return;
+		}
+		int attempts = job.getDispatchAttempts() + 1;
+		job.setDispatchAttempts(attempts);
+		job.setCoreInstanceId(null);
+		job.setError(error);
+		if (attempts >= maxAttempts) {
+			job.setStatus(STATUS_ERROR);
+			job.setNextDispatchAt(null);
+			job.setCompletedAt(Instant.now());
+			log.warn("Generation job {} failed after {} dispatch attempts: {}", runId, attempts, error);
+		} else {
+			job.setStatus(STATUS_QUEUED);
+			job.setNextDispatchAt(nextDispatchAt);
+		}
+		generationJobRepository.save(job);
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<GenerationJob> findByRunId(String runId) {
+		return generationJobRepository.findByRunId(runId);
+	}
+
+	@Transactional
+	public void saveMinibatchDetails(GenerationJob job, String fastaContent, Map<String, Object> detailResponse, int nOffset) {
+		saveDetailRecordsFromResponse(job, detailResponse, fastaContent, nOffset);
+	}
+
 	@SuppressWarnings("unchecked")
-	private void saveDetailRecordsFromResponse(GenerationJob job, Map<String, Object> batchResponse, String fastaContent) {
+	private void saveDetailRecordsFromResponse(GenerationJob job, Map<String, Object> batchResponse, String fastaContent, int nOffset) {
 		Object recordsObj = batchResponse.get("detail");
 		if (recordsObj == null) recordsObj = batchResponse.get("records");
 		if (recordsObj == null) recordsObj = batchResponse.get("detail_records");
@@ -379,6 +476,9 @@ public class GenerationJobService {
 				applyFastaMetricsToRecord(record, match);
 			} else {
 				log.warn("No FASTA match for generation_jobs_record jobId={} n={} seq={}", job.getId(), record.getN(), recordSeq != null && recordSeq.length() > 50 ? recordSeq.substring(0, 50) + "..." : recordSeq);
+			}
+			if (record.getN() != null) {
+				record.setN(record.getN() + nOffset);
 			}
 			generationJobRecordRepository.save(record);
 		}

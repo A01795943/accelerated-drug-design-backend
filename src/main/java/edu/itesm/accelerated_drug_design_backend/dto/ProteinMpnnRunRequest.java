@@ -28,6 +28,9 @@ public class ProteinMpnnRunRequest {
 	@JsonProperty("use_alphafold")
 	private Boolean useAlphafold = true;
 
+	@JsonProperty("seed")
+	private Integer seed;
+
 	public String getRunId() {
 		return runId;
 	}
@@ -82,5 +85,13 @@ public class ProteinMpnnRunRequest {
 
 	public void setUseAlphafold(Boolean useAlphafold) {
 		this.useAlphafold = useAlphafold;
+	}
+
+	public Integer getSeed() {
+		return seed;
+	}
+
+	public void setSeed(Integer seed) {
+		this.seed = seed;
 	}
 }

@@ -28,11 +28,17 @@ public class GenerationJobListItem {
 	private Double maxPtm;
 	/** Max iPTM across records for this job. */
 	private Double maxIPtm;
+	private Long coreInstanceId;
+	private String coreInstanceName;
+	private Integer completedMinibatches;
+	private Integer totalMinibatches;
 
 	/** For JPQL constructor query: only list fields (no outputCsv, fasta, bestPdb). */
 	public GenerationJobListItem(Long id, String runId, String status, String error,
 			Double temperature, Integer numSeqs, Integer totalRecords,
-			Long backboneId, String backboneName, Instant createdAt, Instant completedAt) {
+			Long backboneId, String backboneName, Instant createdAt, Instant completedAt,
+			Long coreInstanceId, String coreInstanceName,
+			Integer completedMinibatches, Integer totalMinibatches) {
 		this.id = id;
 		this.runId = runId;
 		this.status = status;
@@ -44,6 +50,10 @@ public class GenerationJobListItem {
 		this.backboneName = backboneName;
 		this.createdAt = createdAt;
 		this.completedAt = completedAt;
+		this.coreInstanceId = coreInstanceId;
+		this.coreInstanceName = coreInstanceName;
+		this.completedMinibatches = completedMinibatches;
+		this.totalMinibatches = totalMinibatches;
 	}
 
 	public Long getId() { return id; }
@@ -74,4 +84,12 @@ public class GenerationJobListItem {
 	public void setMaxPtm(Double maxPtm) { this.maxPtm = maxPtm; }
 	public Double getMaxIPtm() { return maxIPtm; }
 	public void setMaxIPtm(Double maxIPtm) { this.maxIPtm = maxIPtm; }
+	public Long getCoreInstanceId() { return coreInstanceId; }
+	public void setCoreInstanceId(Long coreInstanceId) { this.coreInstanceId = coreInstanceId; }
+	public String getCoreInstanceName() { return coreInstanceName; }
+	public void setCoreInstanceName(String coreInstanceName) { this.coreInstanceName = coreInstanceName; }
+	public Integer getCompletedMinibatches() { return completedMinibatches; }
+	public void setCompletedMinibatches(Integer completedMinibatches) { this.completedMinibatches = completedMinibatches; }
+	public Integer getTotalMinibatches() { return totalMinibatches; }
+	public void setTotalMinibatches(Integer totalMinibatches) { this.totalMinibatches = totalMinibatches; }
 }
