@@ -3,6 +3,7 @@ package edu.itesm.accelerated_drug_design_backend.config;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -43,6 +44,8 @@ public class SecurityConfig {
 								"/swagger-resources/**",
 								"/webjars/**"
 						).permitAll()
+						.requestMatchers(HttpMethod.POST, "/api/projects/*/resolve-ec").hasRole("ADMIN")
+						.requestMatchers("/api/users/**", "/api/core-instances/**", "/api/cores/**").hasRole("ADMIN")
 						.anyRequest().authenticated()
 				)
 				.build();
