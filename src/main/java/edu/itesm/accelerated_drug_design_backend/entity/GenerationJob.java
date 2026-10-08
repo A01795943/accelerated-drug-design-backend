@@ -10,12 +10,20 @@ import java.time.Instant;
 @Table(name = "generation_jobs")
 public class GenerationJob {
 
+	public static final String STATUS_QUEUED = "QUEUED";
+	public static final String STATUS_RUNNING = "RUNNING";
+	public static final String STATUS_COMPLETED = "COMPLETED";
+	public static final String STATUS_ERROR = "ERROR";
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
 
 	@Column(name = "run_id", length = 64, unique = true)
 	private String runId;
+
+	@Column(name = "core_instance_id")
+	private Long coreInstanceId;
 
 	@Column(name = "created_at", updatable = false)
 	private Instant createdAt;
@@ -55,6 +63,18 @@ public class GenerationJob {
 
 	@Column(name = "total_records")
 	private Integer totalRecords;
+
+	@Column(name = "dispatch_attempts", nullable = false)
+	private int dispatchAttempts = 0;
+
+	@Column(name = "next_dispatch_at")
+	private Instant nextDispatchAt;
+
+	@Column(name = "total_minibatches")
+	private Integer totalMinibatches;
+
+	@Column(name = "completed_minibatches")
+	private Integer completedMinibatches;
 
 	public Long getId() {
 		return id;
@@ -97,6 +117,14 @@ public class GenerationJob {
 
 	public void setRunId(String runId) {
 		this.runId = runId;
+	}
+
+	public Long getCoreInstanceId() {
+		return coreInstanceId;
+	}
+
+	public void setCoreInstanceId(Long coreInstanceId) {
+		this.coreInstanceId = coreInstanceId;
 	}
 
 	public String getStatus() {
@@ -177,5 +205,37 @@ public class GenerationJob {
 
 	public void setCompletedAt(Instant completedAt) {
 		this.completedAt = completedAt;
+	}
+
+	public int getDispatchAttempts() {
+		return dispatchAttempts;
+	}
+
+	public void setDispatchAttempts(int dispatchAttempts) {
+		this.dispatchAttempts = dispatchAttempts;
+	}
+
+	public Instant getNextDispatchAt() {
+		return nextDispatchAt;
+	}
+
+	public void setNextDispatchAt(Instant nextDispatchAt) {
+		this.nextDispatchAt = nextDispatchAt;
+	}
+
+	public Integer getTotalMinibatches() {
+		return totalMinibatches;
+	}
+
+	public void setTotalMinibatches(Integer totalMinibatches) {
+		this.totalMinibatches = totalMinibatches;
+	}
+
+	public Integer getCompletedMinibatches() {
+		return completedMinibatches;
+	}
+
+	public void setCompletedMinibatches(Integer completedMinibatches) {
+		this.completedMinibatches = completedMinibatches;
 	}
 }
