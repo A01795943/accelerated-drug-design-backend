@@ -11,5 +11,6 @@ public interface CoreInstanceMetricsHistoryRepository extends JpaRepository<Core
 	List<CoreInstanceMetricsHistory> findByCoreInstanceIdAndCollectedAtBetweenOrderByCollectedAtAsc(
 			Long coreInstanceId, Instant from, Instant to);
 
+	@org.springframework.transaction.annotation.Transactional
 	long deleteByCollectedAtBefore(Instant cutoff);
 }

@@ -1,6 +1,13 @@
 spring:
   application:
     name: accelerated-drug-design-backend
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+    locations: classpath:db/migration
+    placeholders:
+      coreBaseUrl: ${app.core.base-url}
   jpa:
     hibernate:
       ddl-auto: validate
@@ -29,6 +36,46 @@ app:
   # CORS: orígenes permitidos separados por coma (en Docker: CORS_ORIGINS)
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:4200,http://127.0.0.1:4200}
+  rcsb:
+    data:
+      connect-timeout-ms: ${RCSB_DATA_CONNECT_TIMEOUT_MS:2000}
+      read-timeout-ms: ${RCSB_DATA_READ_TIMEOUT_MS:4000}
+  core:
+    connect-timeout-ms: ${CORE_CONNECT_TIMEOUT_MS:10000}
+    read-timeout-ms: ${CORE_READ_TIMEOUT_MS:120000}
+    allowed-cidrs: ${CORE_ALLOWED_CIDRS:100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8}
+    stale-claim-minutes: ${CORE_STALE_CLAIM_MINUTES:240}
+    dispatch-max-attempts: ${CORE_DISPATCH_MAX_ATTEMPTS:3}
+    dispatch-backoff-ms: ${CORE_DISPATCH_BACKOFF_MS:30000}
+    health-interval-ms: ${CORE_HEALTH_INTERVAL_MS:30000}
+    metrics:
+      poll-interval-ms: ${CORE_METRICS_POLL_INTERVAL_MS:300000}
+      retention-days: ${CORE_METRICS_RETENTION_DAYS:7}
+      max-failures: ${CORE_METRICS_MAX_FAILURES:3}
+    load:
+      cpu-enter: 90
+      memory-enter: 90
+      gpu-util-enter: 95
+      gpu-mem-enter: 90
+      disk-enter: 90
+      cpu-recover: 80
+      memory-recover: 80
+      gpu-util-recover: 80
+      gpu-mem-recover: 80
+      disk-recover: 85
+    # Optional extra instances (V4 already seeds app.core.base-url as core-principal):
+    # instances:
+    #   - name: gpu-2
+    #     base-url: http://100.64.0.2:8000
+    #     max-concurrent-runs: 1
+  generation:
+    minibatch-size: ${GENERATION_MINIBATCH_SIZE:100}
+    dispatch-interval-ms: ${GENERATION_DISPATCH_INTERVAL_MS:15000}
+    max-attempts: ${GENERATION_MAX_ATTEMPTS:3}
+  campaign:
+    poll-interval-ms: ${CAMPAIGN_POLL_INTERVAL_MS:15000}
+  scheduling:
+    timezone: ${SCHEDULING_TIMEZONE:America/Mexico_City}
 
 # OpenAPI / Swagger UI (follows app.api-docs.enabled)
 springdoc:
