@@ -13,6 +13,23 @@ API del proyecto **Drug Accelerator** (diseño acelerado de fármacos). Expone l
 
 El frontend se conecta a esta API (puerto 8080). CORS se configura con `CORS_ORIGINS` (orígenes permitidos separados por coma).
 
+## Propiedades de minibatches, métricas y carga
+
+En `application.yaml` (perfil `test` alarga los intervalos a 1 h para que los schedulers no disparen durante los tests):
+
+| Propiedad | Default | Uso |
+|-----------|---------|-----|
+| `app.generation.minibatch-size` | 100 | Secuencias por minibatch (`GENERATION_MINIBATCH_SIZE`) |
+| `app.generation.dispatch-interval-ms` | 15000 | Cadencia de despacho y recolección (`GENERATION_DISPATCH_INTERVAL_MS`) |
+| `app.generation.max-attempts` | 3 | Reintentos de un minibatch tras ERROR, instancia `UNAVAILABLE` o run huérfano (`GENERATION_MAX_ATTEMPTS`) |
+| `app.core.metrics.poll-interval-ms` | 300000 | Poll de `GET /metrics/system` por instancia (`CORE_METRICS_POLL_INTERVAL_MS`) |
+| `app.core.metrics.max-failures` | 3 | Fallos seguidos antes de marcar la instancia `UNAVAILABLE` (`CORE_METRICS_MAX_FAILURES`) |
+| `app.core.metrics.retention-days` | 7 | Días de `core_instance_metrics_history` (`CORE_METRICS_RETENTION_DAYS`) |
+| `app.core.load.cpu-enter` / `memory-enter` / `gpu-util-enter` / `gpu-mem-enter` / `disk-enter` | 90 / 90 / 95 / 90 / 90 | Umbral estricto `>` para pasar a `OVERLOADED` |
+| `app.core.load.cpu-recover` / `memory-recover` / `gpu-util-recover` / `gpu-mem-recover` / `disk-recover` | 80 / 80 / 80 / 80 / 85 | Hay que quedar por debajo de todos para volver a `AVAILABLE` |
+
+`GET/POST/PATCH /api/cores` (rol admin) administra el registro de instancias, el historial y un refresh manual de métricas.
+
 ---
 
 ## Instalar y desplegar el backend (admin en GCP)
@@ -55,7 +72,7 @@ gcloud sql users set-password root \
   --password="PASSWORD"
 ```
 
-Crea la base de datos y las tablas con el script `db.sql` (ejecutarlo contra esa instancia MySQL).
+Crea la base de datos y las tablas con Flyway al arrancar la aplicación (migraciones en `src/main/resources/db/migration/`). El archivo `db.sql` es solo referencia. Si la instancia ya tiene el schema completo creado manualmente, usar `FLYWAY_BASELINE_VERSION=2` en el primer arranque.
 
 ### 2. Crear la instancia VM en GCP
 
@@ -193,6 +210,24 @@ Requisitos: Java 21+, Gradle. Perfil por defecto: `local` (BD y core en `applica
 ```bash
 ./gradlew bootRun
 ```
+
+### Flyway / schema
+
+El schema se aplica al arrancar (`src/main/resources/db/migration/`). Por defecto `FLYWAY_BASELINE_VERSION=1`: Flyway marca V1 como baseline sobre tablas existentes y ejecuta V2 (campañas).
+
+**Solo** usa `FLYWAY_BASELINE_VERSION=2` si la BD ya tiene **todas** las tablas de campaña creadas manualmente con `db.sql` completo.
+
+**Error `missing table [campaign_backbones]`:** Flyway quedó en v2 sin haber creado las tablas (p. ej. arranque previo con `FLYWAY_BASELINE_VERSION=2` en una BD solo V1). Reparación:
+
+```bash
+# Verifica que FLYWAY_BASELINE_VERSION no esté en 2
+# PowerShell: Remove-Item Env:FLYWAY_BASELINE_VERSION -ErrorAction SilentlyContinue
+
+./gradlew repairFlywaySchema
+./gradlew bootRun
+```
+
+Alternativa manual: `./gradlew dropFlywayHistory` y reiniciar con baseline por defecto (1).
 
 Con perfil docker (variables de entorno):
 
