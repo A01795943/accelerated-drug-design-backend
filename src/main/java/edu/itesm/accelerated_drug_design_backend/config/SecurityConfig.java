@@ -45,7 +45,7 @@ public class SecurityConfig {
 								"/webjars/**"
 						).permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/projects/*/resolve-ec").hasRole("ADMIN")
-						.requestMatchers("/api/users/**", "/api/core-instances/**", "/api/cores/**").hasRole("ADMIN")
+						.requestMatchers("/api/users/**", "/api/core-instances/**", "/api/cores/**", "/api/settings", "/api/settings/**").hasRole("ADMIN")
 						.anyRequest().authenticated()
 				)
 				.build();
