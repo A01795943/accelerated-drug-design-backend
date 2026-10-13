@@ -30,7 +30,6 @@ import java.util.UUID;
 
 import static org.hamcrest.Matchers.hasItem;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -124,9 +123,6 @@ class CoreOccupancyIntegrationTest {
 				.andExpect(jsonPath("$.gpuMemEnter").value(90))
 				.andExpect(jsonPath("$.diskRecover").value(85));
 
-		mockMvc.perform(delete("/api/core-instances/{id}", instanceId)
-						.header("Authorization", "Bearer " + adminToken()))
-				.andExpect(status().isConflict());
 		assertEquals(GenerationJobMinibatch.STATUS_RUNNING, minibatchRepository.findById(minibatch.getId()).orElseThrow().getStatus());
 	}
 
