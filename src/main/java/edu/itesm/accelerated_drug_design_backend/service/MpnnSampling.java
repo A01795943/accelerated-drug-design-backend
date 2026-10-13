@@ -7,22 +7,27 @@ import java.util.Set;
 
 /**
  * Seeds and binder identity shared with {@code pipeline/mpnn_seed.py}.
- * The core adds {@code index * 1_000_003} to this base, so bases that differ
- * by the sequence offset (or by 31 between consecutive job ids) do not overlap.
+ * {@link #seedFor} is a 31-bit mix of the job id and the sequence offset,
+ * so a retry of the same minibatch asks for the same base seed.
  */
 public final class MpnnSampling {
 
 	private MpnnSampling() {
 	}
 
-	/** Base seed for the sequence at {@code nOffset} inside {@code jobId}. */
+	/** 31-bit seed in {@code 1 .. Integer.MAX_VALUE}, stable for the same inputs. */
 	public static int seedFor(long jobId, int nOffset) {
-		long mixed = jobId * 31L + Math.max(nOffset, 0);
-		long reduced = Math.floorMod(mixed, Integer.MAX_VALUE - 1L);
-		if (reduced == 0) {
-			reduced = 1;
-		}
-		return (int) reduced;
+		long mixed = splitmix64(jobId);
+		long offset = Integer.toUnsignedLong(Math.max(nOffset, 0));
+		mixed = splitmix64(mixed ^ (offset * 0x9E3779B97F4A7C15L));
+		int seed = (int) (mixed & 0x7FFFFFFFL);
+		return seed == 0 ? 1 : seed;
+	}
+
+	private static long splitmix64(long z) {
+		z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+		z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+		return z ^ (z >>> 31);
 	}
 
 	/** Binder chain: text after the last '/', without whitespace, uppercased. */

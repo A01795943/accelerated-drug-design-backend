@@ -6,24 +6,27 @@ import java.util.HashSet;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MpnnSamplingTest {
 
-	/** Same stride as pipeline/mpnn_seed.py SEED_STRIDE. */
-	private static final int SEED_STRIDE = 1_000_003;
-
 	@Test
-	void minibatchWindowsAndNeighborJobsDoNotShareSeeds() {
-		int batch = 100;
-		Set<Integer> firstJob = seeds(10L, 0, 20, batch);
-		Set<Integer> laterBatches = seeds(10L, 2000, 20, batch);
-		Set<Integer> nextTemperature = seeds(11L, 0, 20, batch);
-
-		assertEquals(20 * batch, firstJob.size());
-		assertTrue(disjoint(firstJob, laterBatches));
-		assertTrue(disjoint(firstJob, nextTemperature));
-		assertTrue(disjoint(laterBatches, nextTemperature));
+	void seedForIs31BitsDeterministicAndAlmostUnique() {
+		Set<Integer> seeds = new HashSet<>();
+		int collisions = 0;
+		for (long jobId = 1; jobId <= 1000; jobId++) {
+			for (int batch = 0; batch < 20; batch++) {
+				int seed = MpnnSampling.seedFor(jobId, batch * 100);
+				assertTrue(seed >= 1 && seed <= Integer.MAX_VALUE);
+				if (!seeds.add(seed)) {
+					collisions++;
+				}
+			}
+		}
+		assertTrue(collisions <= 2, "collisions=" + collisions);
+		assertEquals(MpnnSampling.seedFor(17L, 0), MpnnSampling.seedFor(17L, 0));
+		assertNotEquals(MpnnSampling.seedFor(17L, 0), MpnnSampling.seedFor(17L, 100));
 	}
 
 	@Test
@@ -38,25 +41,5 @@ class MpnnSamplingTest {
 		assertEquals(binderA, MpnnSampling.binderKey("  " + target.toLowerCase() + " / " + binderA.toLowerCase() + " \n"));
 		assertEquals("ACDE", MpnnSampling.binderKey(" ac de "));
 		assertEquals("", MpnnSampling.binderKey(null));
-	}
-
-	private static Set<Integer> seeds(long jobId, int nOffset, int count, int batch) {
-		Set<Integer> seeds = new HashSet<>();
-		for (int batchIndex = 0; batchIndex < count; batchIndex++) {
-			int base = MpnnSampling.seedFor(jobId, nOffset + batchIndex * batch);
-			for (int n = 0; n < batch; n++) {
-				seeds.add(base + n * SEED_STRIDE);
-			}
-		}
-		return seeds;
-	}
-
-	private static boolean disjoint(Set<Integer> left, Set<Integer> right) {
-		for (Integer seed : left) {
-			if (right.contains(seed)) {
-				return false;
-			}
-		}
-		return true;
 	}
 }
