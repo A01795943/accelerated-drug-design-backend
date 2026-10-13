@@ -15,13 +15,16 @@ import edu.itesm.accelerated_drug_design_backend.repository.CoreInstanceReposito
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobMinibatchRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRecordRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.ProjectRepository;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 import java.util.Map;
@@ -47,6 +50,10 @@ class BinderKeySettingsIntegrationTest {
 	private BinderKeyService binderKeyService;
 	@Autowired
 	private MinibatchDispatcher dispatcher;
+	@Autowired
+	private PlatformTransactionManager transactionManager;
+	@Autowired
+	private EntityManager entityManager;
 	@Autowired
 	private MinibatchCollector collector;
 	@Autowired
@@ -83,6 +90,21 @@ class BinderKeySettingsIntegrationTest {
 
 	@Test
 	void dispatchSendsMaxAttemptsAndDoesNotExcludeItsOwnKeys() {
+		new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+			for (CoreInstance instance : coreInstanceRepository.findAll()) {
+				instance.setStatus(CoreInstance.STATUS_AVAILABLE);
+				instance.setStatusReason(null);
+				instance.setConsecutiveFailures(0);
+			}
+			for (GenerationJobMinibatch existing : minibatchRepository.findAll()) {
+				if (GenerationJobMinibatch.STATUS_PENDING.equals(existing.getStatus())
+						|| GenerationJobMinibatch.STATUS_RUNNING.equals(existing.getStatus())) {
+					existing.setStatus(GenerationJobMinibatch.STATUS_ERROR);
+					existing.setCoreInstanceId(null);
+				}
+			}
+		});
+		entityManager.clear();
 		GenerationJob job = createJob(4);
 		GenerationJobMinibatch minibatch = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(job.getId()).get(0);
 		Long backboneId = job.getBackboneId();
@@ -157,9 +179,13 @@ class BinderKeySettingsIntegrationTest {
 	void unavailableInstanceDoesNotRequeueARunThatIsStillRunning() {
 		GenerationJob job = createJob(4);
 		GenerationJobMinibatch minibatch = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(job.getId()).get(0);
-		CoreInstance instance = coreInstanceRepository.findAll().get(0);
+		CoreInstance instance = new CoreInstance();
+		instance.setName("down-" + UUID.randomUUID());
+		instance.setBaseUrl("http://10.9.9.9:8000");
+		instance.setEnabled(true);
+		instance.setHealthState(CoreInstance.HEALTH_UNKNOWN);
 		instance.setStatus(CoreInstance.STATUS_UNAVAILABLE);
-		coreInstanceRepository.save(instance);
+		instance = coreInstanceRepository.save(instance);
 		minibatch.setStatus(GenerationJobMinibatch.STATUS_RUNNING);
 		minibatch.setCoreInstanceId(instance.getId());
 		minibatch.setAttempts(1);
