@@ -42,6 +42,12 @@ public class CoreInstanceMetricsHistory {
 	@Column(name = "net_recv_per_sec")
 	private Double netRecvPerSec;
 
+	@Column(name = "gpu_mem_used_mb")
+	private Double gpuMemUsedMb;
+
+	@Column(name = "gpu_mem_total_mb")
+	private Double gpuMemTotalMb;
+
 	public Long getId() {
 		return id;
 	}
@@ -128,5 +134,21 @@ public class CoreInstanceMetricsHistory {
 
 	public void setNetRecvPerSec(Double netRecvPerSec) {
 		this.netRecvPerSec = netRecvPerSec;
+	}
+
+	public Double getGpuMemUsedMb() {
+		return gpuMemUsedMb;
+	}
+
+	public void setGpuMemUsedMb(Double gpuMemUsedMb) {
+		this.gpuMemUsedMb = gpuMemUsedMb;
+	}
+
+	public Double getGpuMemTotalMb() {
+		return gpuMemTotalMb;
+	}
+
+	public void setGpuMemTotalMb(Double gpuMemTotalMb) {
+		this.gpuMemTotalMb = gpuMemTotalMb;
 	}
 }

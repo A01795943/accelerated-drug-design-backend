@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.itesm.accelerated_drug_design_backend.config.CoreLoadProperties;
 import edu.itesm.accelerated_drug_design_backend.core.CoreSystemInterface;
+import edu.itesm.accelerated_drug_design_backend.dto.GpuReading;
 import edu.itesm.accelerated_drug_design_backend.entity.CoreInstance;
 import edu.itesm.accelerated_drug_design_backend.entity.CoreInstanceMetricsHistory;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch;
@@ -20,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -35,7 +37,7 @@ public class CoreMetricsPoller {
 
 	private final CoreInstanceRepository coreInstanceRepository;
 	private final CoreInstanceMetricsHistoryRepository historyRepository;
-	private final GenerationJobMinibatchRepository minibatchRepository;
+	private final CoreOccupancyService occupancyService;
 	private final CoreSystemInterface coreSystem;
 	private final CoreLoadProperties loadProperties;
 	private final ObjectMapper objectMapper = new ObjectMapper();
@@ -45,14 +47,14 @@ public class CoreMetricsPoller {
 	public CoreMetricsPoller(
 			CoreInstanceRepository coreInstanceRepository,
 			CoreInstanceMetricsHistoryRepository historyRepository,
-			GenerationJobMinibatchRepository minibatchRepository,
+			CoreOccupancyService occupancyService,
 			CoreSystemInterface coreSystem,
 			CoreLoadProperties loadProperties,
 			@Value("${app.core.metrics.max-failures:3}") int maxFailures,
 			@Value("${app.core.metrics.retention-days:7}") int retentionDays) {
 		this.coreInstanceRepository = coreInstanceRepository;
 		this.historyRepository = historyRepository;
-		this.minibatchRepository = minibatchRepository;
+		this.occupancyService = occupancyService;
 		this.coreSystem = coreSystem;
 		this.loadProperties = loadProperties;
 		this.maxFailures = Math.max(1, maxFailures);
@@ -149,6 +151,11 @@ public class CoreMetricsPoller {
 		row.setMemPercent(CoreLoadPolicy.nestedPercent(metrics, "memory"));
 		row.setGpuUtilPercent(CoreLoadPolicy.maxGpu(metrics, "util_percent"));
 		row.setGpuMemPercent(CoreLoadPolicy.maxGpu(metrics, "mem_percent"));
+		GpuReading busiest = GpuMetrics.busiestMemory(GpuMetrics.read(metrics.get("gpus")));
+		if (busiest != null) {
+			row.setGpuMemUsedMb(busiest.memUsedMb());
+			row.setGpuMemTotalMb(busiest.memTotalMb());
+		}
 		row.setDiskPercent(CoreLoadPolicy.nestedPercent(metrics, "disk"));
 		Object runs = metrics.get("runs");
 		if (runs instanceof Map<?, ?> runMap && runMap.get("running_count") instanceof Number number) {
@@ -168,30 +175,39 @@ public class CoreMetricsPoller {
 
 	@Transactional(readOnly = true)
 	public boolean isEligible(CoreInstance instance) {
-		if (instance == null || !instance.isEnabled()) {
+		if (instance == null) {
 			return false;
 		}
-		if (!CoreInstance.STATUS_AVAILABLE.equals(instance.getStatus())) {
-			return false;
+		return ineligibleReason(instance, occupancyService.byInstance(List.of(instance)).get(instance.getId())) == null;
+	}
+
+	@Transactional(readOnly = true)
+	public List<InstanceLoad> describeInstances() {
+		List<CoreInstance> instances = coreInstanceRepository.findAll();
+		Map<Long, CoreOccupancyService.InstanceOccupancy> loads = occupancyService.byInstance(instances);
+		List<InstanceLoad> rows = new ArrayList<>();
+		for (CoreInstance instance : instances) {
+			CoreOccupancyService.InstanceOccupancy load = loads.get(instance.getId());
+			rows.add(new InstanceLoad(
+					instance.getId(),
+					instance.getStatus(),
+					instance.isEnabled(),
+					load == null ? 0 : load.inFlightTotal(),
+					load == null ? Math.max(1, instance.getMaxConcurrentRuns()) : load.maxConcurrentRuns(),
+					ineligibleReason(instance, load)));
 		}
-		if (CoreInstance.HEALTH_DOWN.equals(instance.getHealthState())) {
-			return false;
-		}
-		long inFlight = minibatchRepository.countByCoreInstanceIdAndStatus(
-				instance.getId(), GenerationJobMinibatch.STATUS_RUNNING);
-		if (instance.getCurrentRunId() != null && !instance.getCurrentRunId().isBlank()
-				&& minibatchRepository.findByRunId(instance.getCurrentRunId()).isEmpty()) {
-			inFlight += 1;
-		}
-		int max = Math.max(1, instance.getMaxConcurrentRuns());
-		return inFlight < max;
+		return rows;
 	}
 
 	public CoreInstance pickEligible() {
-		return coreInstanceRepository.findByEnabledTrue().stream()
-				.filter(this::isEligible)
+		List<CoreInstance> enabled = coreInstanceRepository.findByEnabledTrue();
+		Map<Long, CoreOccupancyService.InstanceOccupancy> loads = occupancyService.byInstance(enabled);
+		return enabled.stream()
+				.filter(instance -> ineligibleReason(instance, loads.get(instance.getId())) == null)
 				.min((a, b) -> {
-					int byLoad = Long.compare(inFlight(a), inFlight(b));
+					long left = loads.get(a.getId()) == null ? 0 : loads.get(a.getId()).inFlightTotal();
+					long right = loads.get(b.getId()) == null ? 0 : loads.get(b.getId()).inFlightTotal();
+					int byLoad = Long.compare(left, right);
 					if (byLoad != 0) {
 						return byLoad;
 					}
@@ -204,15 +220,25 @@ public class CoreMetricsPoller {
 				.orElse(null);
 	}
 
-	private long inFlight(CoreInstance instance) {
-		long count = minibatchRepository.countByCoreInstanceIdAndStatus(
-				instance.getId(), GenerationJobMinibatch.STATUS_RUNNING);
-		if (instance.getCurrentRunId() != null && !instance.getCurrentRunId().isBlank()
-				&& minibatchRepository.findByRunId(instance.getCurrentRunId()).isEmpty()) {
-			count += 1;
+	private String ineligibleReason(CoreInstance instance, CoreOccupancyService.InstanceOccupancy load) {
+		if (instance == null || !instance.isEnabled()) {
+			return "disabled";
 		}
-		return count;
+		if (!CoreInstance.STATUS_AVAILABLE.equals(instance.getStatus())) {
+			return "status " + instance.getStatus();
+		}
+		if (CoreInstance.HEALTH_DOWN.equals(instance.getHealthState())) {
+			return "health DOWN";
+		}
+		long inFlight = load == null ? 0 : load.inFlightTotal();
+		int max = load == null ? Math.max(1, instance.getMaxConcurrentRuns()) : load.maxConcurrentRuns();
+		if (inFlight >= max) {
+			return "at capacity";
+		}
+		return null;
 	}
+
+	public record InstanceLoad(Long id, String status, boolean enabled, long inFlight, int maxConcurrent, String skipReason) {}
 
 	private double gpuUtil(CoreInstance instance) {
 		Double value = null;

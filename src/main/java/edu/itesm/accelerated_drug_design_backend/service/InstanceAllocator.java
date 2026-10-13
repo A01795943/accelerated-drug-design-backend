@@ -21,12 +21,15 @@ import java.util.List;
 public class InstanceAllocator {
 
 	private final CoreInstanceRepository coreInstanceRepository;
+	private final CoreOccupancyService occupancyService;
 	private final ZoneId zone;
 
 	public InstanceAllocator(
 			CoreInstanceRepository coreInstanceRepository,
+			CoreOccupancyService occupancyService,
 			@Value("${app.scheduling.timezone:America/Mexico_City}") String timezone) {
 		this.coreInstanceRepository = coreInstanceRepository;
+		this.occupancyService = occupancyService;
 		this.zone = ZoneId.of(timezone);
 	}
 
@@ -64,13 +67,14 @@ public class InstanceAllocator {
 		if (instance == null || !instance.isEnabled()) {
 			return false;
 		}
-		if (instance.getCurrentRunId() != null) {
-			return false;
-		}
 		if (CoreInstance.HEALTH_DOWN.equals(instance.getHealthState())) {
 			return false;
 		}
 		if (instance.getStatus() != null && !CoreInstance.STATUS_AVAILABLE.equals(instance.getStatus())) {
+			return false;
+		}
+		CoreOccupancyService.InstanceOccupancy load = occupancyService.byInstance(List.of(instance)).get(instance.getId());
+		if (load != null && load.inFlightTotal() >= load.maxConcurrentRuns()) {
 			return false;
 		}
 		return isWithinWindow(instance, nowZoned) && fitsMargin(instance, nowZoned);

@@ -13,5 +13,7 @@ public record CoreInstanceMetricsHistoryDto(
 		Double diskPercent,
 		Integer runningCount,
 		Double netSentPerSec,
-		Double netRecvPerSec
+		Double netRecvPerSec,
+		Double gpuMemUsedMb,
+		Double gpuMemTotalMb
 ) {}

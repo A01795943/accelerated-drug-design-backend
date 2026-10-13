@@ -1,17 +1,23 @@
 package edu.itesm.accelerated_drug_design_backend.web;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.itesm.accelerated_drug_design_backend.config.CoreLoadProperties;
 import edu.itesm.accelerated_drug_design_backend.dto.CoreAdminInstanceDto;
 import edu.itesm.accelerated_drug_design_backend.dto.CoreInstanceMetricsHistoryDto;
+import edu.itesm.accelerated_drug_design_backend.dto.GpuReading;
+import edu.itesm.accelerated_drug_design_backend.dto.LoadPolicyDto;
 import edu.itesm.accelerated_drug_design_backend.dto.PatchCoreAdminRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RegisterCoreRequest;
 import edu.itesm.accelerated_drug_design_backend.entity.CoreInstance;
 import edu.itesm.accelerated_drug_design_backend.entity.CoreInstanceMetricsHistory;
-import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch;
 import edu.itesm.accelerated_drug_design_backend.repository.CoreInstanceMetricsHistoryRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.CoreInstanceRepository;
-import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobMinibatchRepository;
 import edu.itesm.accelerated_drug_design_backend.service.CoreBaseUrlValidator;
 import edu.itesm.accelerated_drug_design_backend.service.CoreMetricsPoller;
+import edu.itesm.accelerated_drug_design_backend.service.CoreOccupancyService;
+import edu.itesm.accelerated_drug_design_backend.service.GpuMetrics;
+import edu.itesm.accelerated_drug_design_backend.service.MetricsHistorySampler;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.persistence.EntityNotFoundException;
@@ -19,10 +25,20 @@ import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Load-aware admin API. The existing pool CRUD remains at {@code /api/core-instances}
@@ -34,29 +50,47 @@ import java.util.List;
 @Tag(name = "Cores", description = "Core load status, metrics history and registration")
 public class CoreAdminController {
 
+	private static final Set<Integer> HISTORY_HOURS = Set.of(1, 6, 24, 168);
+
 	private final CoreInstanceRepository coreInstanceRepository;
-	private final GenerationJobMinibatchRepository minibatchRepository;
 	private final CoreInstanceMetricsHistoryRepository historyRepository;
 	private final CoreBaseUrlValidator baseUrlValidator;
 	private final CoreMetricsPoller metricsPoller;
+	private final CoreOccupancyService occupancyService;
+	private final CoreLoadProperties loadProperties;
+	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	public CoreAdminController(
 			CoreInstanceRepository coreInstanceRepository,
-			GenerationJobMinibatchRepository minibatchRepository,
 			CoreInstanceMetricsHistoryRepository historyRepository,
 			CoreBaseUrlValidator baseUrlValidator,
-			CoreMetricsPoller metricsPoller) {
+			CoreMetricsPoller metricsPoller,
+			CoreOccupancyService occupancyService,
+			CoreLoadProperties loadProperties) {
 		this.coreInstanceRepository = coreInstanceRepository;
-		this.minibatchRepository = minibatchRepository;
 		this.historyRepository = historyRepository;
 		this.baseUrlValidator = baseUrlValidator;
 		this.metricsPoller = metricsPoller;
+		this.occupancyService = occupancyService;
+		this.loadProperties = loadProperties;
 	}
 
 	@GetMapping
-	@Operation(summary = "List core instances with load status and in-flight minibatches")
+	@Operation(summary = "List core instances with the same occupancy the dispatcher uses")
 	public List<CoreAdminInstanceDto> list() {
-		return coreInstanceRepository.findAll().stream().map(this::toDto).toList();
+		List<CoreInstance> instances = coreInstanceRepository.findAll();
+		Map<Long, CoreOccupancyService.InstanceOccupancy> loads = occupancyService.byInstance(instances);
+		return instances.stream().map(instance -> toDto(instance, loads.get(instance.getId()))).toList();
+	}
+
+	@GetMapping("/load-policy")
+	@Operation(summary = "Load thresholds used to color meters and to mark a core OVERLOADED")
+	public LoadPolicyDto loadPolicy() {
+		CoreLoadPolicyThresholds enter = new CoreLoadPolicyThresholds(loadProperties.enter());
+		CoreLoadPolicyThresholds recover = new CoreLoadPolicyThresholds(loadProperties.recover());
+		return new LoadPolicyDto(
+				enter.cpu, enter.memory, enter.gpuUtil, enter.gpuMem, enter.disk,
+				recover.cpu, recover.memory, recover.gpuUtil, recover.gpuMem, recover.disk);
 	}
 
 	@PostMapping
@@ -73,7 +107,8 @@ public class CoreAdminController {
 		instance.setHealthState(CoreInstance.HEALTH_UNKNOWN);
 		instance.setStatus(CoreInstance.STATUS_AVAILABLE);
 		instance.setMaxConcurrentRuns(request.maxConcurrentRuns() == null ? 1 : request.maxConcurrentRuns());
-		return ResponseEntity.status(HttpStatus.CREATED).body(toDto(coreInstanceRepository.save(instance)));
+		CoreInstance saved = coreInstanceRepository.save(instance);
+		return ResponseEntity.status(HttpStatus.CREATED).body(toDto(saved, occupancyService.byInstance(List.of(saved)).get(saved.getId())));
 	}
 
 	@PatchMapping("/{id}")
@@ -94,37 +129,59 @@ public class CoreAdminController {
 			}
 			instance.setBaseUrl(baseUrl);
 		}
-		return toDto(coreInstanceRepository.save(instance));
+		CoreInstance saved = coreInstanceRepository.save(instance);
+		return toDto(saved, occupancyService.byInstance(List.of(saved)).get(saved.getId()));
 	}
 
 	@GetMapping("/{id}/metrics/history")
-	@Operation(summary = "Metric samples between from and to (ISO-8601)")
+	@Operation(summary = "Metric samples. hours is 1, 6, 24 or 168. from and to stay available.")
 	public List<CoreInstanceMetricsHistoryDto> history(
 			@PathVariable Long id,
 			@RequestParam(required = false) Instant from,
-			@RequestParam(required = false) Instant to) {
+			@RequestParam(required = false) Instant to,
+			@RequestParam(required = false) Integer hours) {
 		if (!coreInstanceRepository.existsById(id)) {
 			throw new EntityNotFoundException("Core instance not found: " + id);
 		}
-		Instant end = to != null ? to : Instant.now();
-		Instant start = from != null ? from : end.minusSeconds(7L * 24 * 3600);
-		return historyRepository.findByCoreInstanceIdAndCollectedAtBetweenOrderByCollectedAtAsc(id, start, end)
+		Instant end;
+		Instant start;
+		if (hours != null) {
+			if (!HISTORY_HOURS.contains(hours)) {
+				throw new IllegalArgumentException("hours must be 1, 6, 24 or 168");
+			}
+			end = Instant.now();
+			start = end.minus(hours, ChronoUnit.HOURS);
+		} else {
+			end = to != null ? to : Instant.now();
+			start = from != null ? from : end.minus(7, ChronoUnit.DAYS);
+		}
+		List<CoreInstanceMetricsHistoryDto> points = historyRepository
+				.findByCoreInstanceIdAndCollectedAtBetweenOrderByCollectedAtAsc(id, start, end)
 				.stream()
 				.map(this::toHistory)
 				.toList();
+		return MetricsHistorySampler.limit(points);
 	}
 
 	@PostMapping("/{id}/refresh")
 	@Operation(summary = "Query GET /metrics/system now")
 	public CoreAdminInstanceDto refresh(@PathVariable Long id) {
 		metricsPoller.refresh(id);
-		return toDto(coreInstanceRepository.findById(id)
-				.orElseThrow(() -> new EntityNotFoundException("Core instance not found: " + id)));
+		CoreInstance instance = coreInstanceRepository.findById(id)
+				.orElseThrow(() -> new EntityNotFoundException("Core instance not found: " + id));
+		return toDto(instance, occupancyService.byInstance(List.of(instance)).get(instance.getId()));
 	}
 
-	private CoreAdminInstanceDto toDto(CoreInstance instance) {
-		long inFlight = minibatchRepository.countByCoreInstanceIdAndStatus(
-				instance.getId(), GenerationJobMinibatch.STATUS_RUNNING);
+	private CoreAdminInstanceDto toDto(CoreInstance instance, CoreOccupancyService.InstanceOccupancy load) {
+		List<GpuReading> gpus = List.of();
+		boolean gpuData = false;
+		Map<String, Object> metrics = parseMetrics(instance.getLastMetricsJson());
+		if (metrics != null) {
+			Object node = metrics.get("gpus");
+			gpuData = GpuMetrics.hasData(node);
+			gpus = GpuMetrics.read(node);
+		}
+		long minibatchCount = load == null ? 0 : load.runningMinibatches().size();
 		return new CoreAdminInstanceDto(
 				instance.getId(),
 				instance.getName(),
@@ -133,11 +190,17 @@ public class CoreAdminController {
 				instance.getStatus(),
 				instance.getStatusReason(),
 				instance.getMaxConcurrentRuns(),
-				inFlight,
+				minibatchCount,
 				instance.getHealthState(),
 				instance.getCurrentRunId(),
 				instance.getLastMetricsAt(),
-				instance.getLastMetricsJson());
+				instance.getLastMetricsJson(),
+				load == null ? 0 : load.inFlightTotal(),
+				load == null ? CoreOccupancyService.FREE : load.state(),
+				load == null ? List.of() : load.runningMinibatches(),
+				load == null ? null : load.otherRun(),
+				gpuData,
+				gpus);
 	}
 
 	private CoreInstanceMetricsHistoryDto toHistory(CoreInstanceMetricsHistory row) {
@@ -152,6 +215,26 @@ public class CoreAdminController {
 				row.getDiskPercent(),
 				row.getRunningCount(),
 				row.getNetSentPerSec(),
-				row.getNetRecvPerSec());
+				row.getNetRecvPerSec(),
+				row.getGpuMemUsedMb(),
+				row.getGpuMemTotalMb());
+	}
+
+	@SuppressWarnings("unchecked")
+	private Map<String, Object> parseMetrics(String json) {
+		if (json == null || json.isBlank()) {
+			return null;
+		}
+		try {
+			return objectMapper.readValue(json, Map.class);
+		} catch (JsonProcessingException ex) {
+			return null;
+		}
+	}
+
+	private record CoreLoadPolicyThresholds(double cpu, double memory, double gpuUtil, double gpuMem, double disk) {
+		private CoreLoadPolicyThresholds(edu.itesm.accelerated_drug_design_backend.service.CoreLoadPolicy.Thresholds source) {
+			this(source.cpu(), source.memory(), source.gpuUtil(), source.gpuMem(), source.disk());
+		}
 	}
 }

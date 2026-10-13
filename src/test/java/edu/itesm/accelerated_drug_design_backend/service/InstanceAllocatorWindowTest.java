@@ -23,11 +23,14 @@ class InstanceAllocatorWindowTest {
 	@Mock
 	private edu.itesm.accelerated_drug_design_backend.repository.CoreInstanceRepository repository;
 
+	@Mock
+	private edu.itesm.accelerated_drug_design_backend.repository.GenerationJobMinibatchRepository minibatches;
+
 	private InstanceAllocator allocator;
 
 	@BeforeEach
 	void setUp() {
-		allocator = new InstanceAllocator(repository, ZONE.getId());
+		allocator = new InstanceAllocator(repository, new CoreOccupancyService(minibatches), ZONE.getId());
 	}
 
 	@Test
