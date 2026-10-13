@@ -59,6 +59,21 @@ public class GenerationJobMinibatch {
 	@Column(name = "completed_at")
 	private Instant completedAt;
 
+	@Column(name = "attempts_used")
+	private Integer attemptsUsed;
+
+	@Column(name = "accepted_count")
+	private Integer acceptedCount;
+
+	@Column(name = "skipped_db_duplicates")
+	private Integer skippedDbDuplicates;
+
+	@Column(name = "skipped_batch_duplicates")
+	private Integer skippedBatchDuplicates;
+
+	@Column(name = "capped", nullable = false)
+	private boolean capped = false;
+
 	public Long getId() {
 		return id;
 	}
@@ -161,5 +176,45 @@ public class GenerationJobMinibatch {
 
 	public void setCompletedAt(Instant completedAt) {
 		this.completedAt = completedAt;
+	}
+
+	public Integer getAttemptsUsed() {
+		return attemptsUsed;
+	}
+
+	public void setAttemptsUsed(Integer attemptsUsed) {
+		this.attemptsUsed = attemptsUsed;
+	}
+
+	public Integer getAcceptedCount() {
+		return acceptedCount;
+	}
+
+	public void setAcceptedCount(Integer acceptedCount) {
+		this.acceptedCount = acceptedCount;
+	}
+
+	public Integer getSkippedDbDuplicates() {
+		return skippedDbDuplicates;
+	}
+
+	public void setSkippedDbDuplicates(Integer skippedDbDuplicates) {
+		this.skippedDbDuplicates = skippedDbDuplicates;
+	}
+
+	public Integer getSkippedBatchDuplicates() {
+		return skippedBatchDuplicates;
+	}
+
+	public void setSkippedBatchDuplicates(Integer skippedBatchDuplicates) {
+		this.skippedBatchDuplicates = skippedBatchDuplicates;
+	}
+
+	public boolean isCapped() {
+		return capped;
+	}
+
+	public void setCapped(boolean capped) {
+		this.capped = capped;
 	}
 }

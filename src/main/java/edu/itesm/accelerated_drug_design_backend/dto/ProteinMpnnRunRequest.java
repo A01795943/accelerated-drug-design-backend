@@ -31,6 +31,13 @@ public class ProteinMpnnRunRequest {
 	@JsonProperty("seed")
 	private Integer seed;
 
+	/** Binder sequences already stored for this backbone. The core skips them before AlphaFold. */
+	@JsonProperty("exclude_binder_seqs")
+	private java.util.List<String> excludeBinderSeqs;
+
+	@JsonProperty("max_attempts")
+	private Integer maxAttempts;
+
 	public String getRunId() {
 		return runId;
 	}
@@ -93,5 +100,21 @@ public class ProteinMpnnRunRequest {
 
 	public void setSeed(Integer seed) {
 		this.seed = seed;
+	}
+
+	public java.util.List<String> getExcludeBinderSeqs() {
+		return excludeBinderSeqs;
+	}
+
+	public void setExcludeBinderSeqs(java.util.List<String> excludeBinderSeqs) {
+		this.excludeBinderSeqs = excludeBinderSeqs;
+	}
+
+	public Integer getMaxAttempts() {
+		return maxAttempts;
+	}
+
+	public void setMaxAttempts(Integer maxAttempts) {
+		this.maxAttempts = maxAttempts;
 	}
 }

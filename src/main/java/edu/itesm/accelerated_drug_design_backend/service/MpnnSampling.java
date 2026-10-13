@@ -30,6 +30,14 @@ public final class MpnnSampling {
 		return z ^ (z >>> 31);
 	}
 
+	public static String storedBinderKey(String seq) {
+		String key = binderKey(seq);
+		if (key.length() <= 64) {
+			return key;
+		}
+		return key.substring(0, 64);
+	}
+
 	/** Binder chain: text after the last '/', without whitespace, uppercased. */
 	public static String binderKey(String seq) {
 		if (seq == null) {

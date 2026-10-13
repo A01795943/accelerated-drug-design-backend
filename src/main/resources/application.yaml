@@ -1,6 +1,10 @@
 spring:
   application:
     name: accelerated-drug-design-backend
+  task:
+    scheduling:
+      pool:
+        size: 4
   flyway:
     enabled: true
     baseline-on-migrate: true
@@ -16,6 +20,15 @@ spring:
       hibernate:
         format_sql: true
         dialect: org.hibernate.dialect.MySQLDialect
+        # READ_COMMITTED (JDBC isolation 2). MariaDB's default REPEATABLE READ
+        # takes next-key gap locks on range deletes and on non-matching index
+        # scans. Those locks were held for the whole minibatch insert and
+        # deadlocked health updates and markRunningIfStillQueued. The scheduler
+        # writers do not need a repeatable snapshot.
+        connection.isolation: 2
+        jdbc.batch_size: 50
+        order_inserts: true
+        order_updates: true
     open-in-view: false
 
 # Perfil por defecto: local. Para Docker usar: --spring.profiles.active=docker
@@ -48,8 +61,9 @@ app:
     dispatch-max-attempts: ${CORE_DISPATCH_MAX_ATTEMPTS:3}
     dispatch-backoff-ms: ${CORE_DISPATCH_BACKOFF_MS:30000}
     health-interval-ms: ${CORE_HEALTH_INTERVAL_MS:30000}
+    health-timeout-ms: ${CORE_HEALTH_TIMEOUT_MS:3000}
     metrics:
-      poll-interval-ms: ${CORE_METRICS_POLL_INTERVAL_MS:300000}
+      poll-interval-ms: ${CORE_METRICS_POLL_INTERVAL_MS:60000}
       retention-days: ${CORE_METRICS_RETENTION_DAYS:7}
       max-failures: ${CORE_METRICS_MAX_FAILURES:3}
     load:
