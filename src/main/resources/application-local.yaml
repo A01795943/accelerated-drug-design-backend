@@ -9,3 +9,7 @@ spring:
     username: root
     password: ""
     driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    # Si la BD ya fue creada con db.sql completo (incluye tablas de campaña), usar
+    # FLYWAY_BASELINE_VERSION=2 en el primer arranque para no re-ejecutar V2.
+    baseline-version: ${FLYWAY_BASELINE_VERSION:1}

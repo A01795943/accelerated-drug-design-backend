@@ -1,57 +1,44 @@
 package edu.itesm.accelerated_drug_design_backend.service;
 
-import edu.itesm.accelerated_drug_design_backend.cache.PdbCacheService;
 import edu.itesm.accelerated_drug_design_backend.core.CoreSystemInterface;
 import edu.itesm.accelerated_drug_design_backend.entity.CoreInstance;
-import edu.itesm.accelerated_drug_design_backend.entity.GenerationJob;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch;
-import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobRecord;
 import edu.itesm.accelerated_drug_design_backend.repository.CoreInstanceRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobMinibatchRepository;
-import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRecordRepository;
-import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class MinibatchCollector {
 
 	private static final Logger log = LoggerFactory.getLogger(MinibatchCollector.class);
+	private static final int LOG_SUMMARY_EVERY = 10;
 
 	private final GenerationJobMinibatchRepository minibatchRepository;
-	private final GenerationJobRepository generationJobRepository;
-	private final GenerationJobRecordRepository recordRepository;
 	private final CoreInstanceRepository coreInstanceRepository;
 	private final CoreSystemInterface coreSystem;
-	private final GenerationJobService generationJobService;
-	private final PdbCacheService pdbCache;
-	private final int maxAttempts;
+	private final CoreMetricsPoller metricsPoller;
+	private final MinibatchPersistenceService persistenceService;
+	private final Map<Long, RepeatedFailure> repeatedFailures = new ConcurrentHashMap<>();
 
 	public MinibatchCollector(
 			GenerationJobMinibatchRepository minibatchRepository,
-			GenerationJobRepository generationJobRepository,
-			GenerationJobRecordRepository recordRepository,
 			CoreInstanceRepository coreInstanceRepository,
 			CoreSystemInterface coreSystem,
-			GenerationJobService generationJobService,
-			PdbCacheService pdbCache,
-			@Value("${app.generation.max-attempts:3}") int maxAttempts) {
+			CoreMetricsPoller metricsPoller,
+			MinibatchPersistenceService persistenceService) {
 		this.minibatchRepository = minibatchRepository;
-		this.generationJobRepository = generationJobRepository;
-		this.recordRepository = recordRepository;
 		this.coreInstanceRepository = coreInstanceRepository;
 		this.coreSystem = coreSystem;
-		this.generationJobService = generationJobService;
-		this.pdbCache = pdbCache;
-		this.maxAttempts = Math.max(1, maxAttempts);
+		this.metricsPoller = metricsPoller;
+		this.persistenceService = persistenceService;
 	}
 
 	@Scheduled(fixedDelayString = "${app.generation.dispatch-interval-ms:15000}")
@@ -61,14 +48,14 @@ public class MinibatchCollector {
 		for (GenerationJobMinibatch minibatch : running) {
 			try {
 				collectOne(minibatch.getId());
+				repeatedFailures.remove(minibatch.getId());
 			} catch (Exception e) {
-				log.warn("Collect minibatch {} failed: {}", minibatch.getId(), e.getMessage());
+				logRepeated(minibatch.getId(), e);
 			}
 		}
 	}
 
-	@Transactional
-	public void collectOne(Long minibatchId) {
+	private void collectOne(Long minibatchId) {
 		GenerationJobMinibatch minibatch = minibatchRepository.findById(minibatchId).orElse(null);
 		if (minibatch == null || !GenerationJobMinibatch.STATUS_RUNNING.equals(minibatch.getStatus())) {
 			return;
@@ -77,13 +64,26 @@ public class MinibatchCollector {
 				? null
 				: coreInstanceRepository.findById(minibatch.getCoreInstanceId()).orElse(null);
 		if (instance == null || CoreInstance.STATUS_UNAVAILABLE.equals(instance.getStatus())) {
-			failOrRequeue(minibatch, instance == null ? "core instance missing" : "core instance UNAVAILABLE");
+			if (instance != null && coreRunStillRunning(instance, minibatch.getRunId())) {
+				log.info("Minibatch {} stays RUNNING: instance {} is UNAVAILABLE but the core run is still RUNNING",
+						minibatch.getRunId(), instance.getId());
+				return;
+			}
+			persistenceService.markCoreFailure(
+					minibatchId,
+					instance == null ? "core instance missing" : "core instance UNAVAILABLE");
 			return;
 		}
 		Map<String, Object> response = coreSystem.getMpnnStatus(instance, minibatch.getRunId());
 		if (response == null) {
+			metricsPoller.recordUnreachable(instance.getId(), "status unreachable");
+			CoreInstance fresh = coreInstanceRepository.findById(instance.getId()).orElse(null);
+			if (fresh != null && CoreInstance.STATUS_UNAVAILABLE.equals(fresh.getStatus())) {
+				persistenceService.markCoreFailure(minibatchId, "core unreachable");
+			}
 			return;
 		}
+		metricsPoller.recordReachable(instance.getId());
 		String status = text(response, "status");
 		if (status == null) {
 			return;
@@ -94,7 +94,7 @@ public class MinibatchCollector {
 			return;
 		}
 		if ("ERROR".equals(status) || (errorDetails != null && errorDetails.toLowerCase().contains("orphaned"))) {
-			failOrRequeue(minibatch, errorDetails != null ? errorDetails : "core error");
+			persistenceService.markCoreFailure(minibatchId, errorDetails != null ? errorDetails : "core error");
 			return;
 		}
 		if (!"COMPLETED".equals(status)) {
@@ -102,111 +102,47 @@ public class MinibatchCollector {
 		}
 		String fasta = fastaOf(response);
 		int batches = batchesOf(response);
-		recordRepository.deleteByJobIdAndNRange(
-				minibatch.getGenerationJobId(),
-				minibatch.getNOffset(),
-				minibatch.getNOffset() + minibatch.getNumSeqs());
-		GenerationJob job = generationJobRepository.findById(minibatch.getGenerationJobId()).orElse(null);
-		if (job == null) {
-			return;
-		}
+		List<Map<String, Object>> details = new ArrayList<>();
 		for (int batch = 0; batch < batches; batch++) {
 			Map<String, Object> detail = coreSystem.getMpnnStatusDetail(instance, minibatch.getRunId(), batch);
 			if (detail != null) {
-				generationJobService.saveMinibatchDetails(job, fasta, detail, minibatch.getNOffset());
+				details.add(detail);
 			}
 		}
-		minibatch.setFasta(fasta);
-		minibatch.setStatus(GenerationJobMinibatch.STATUS_COMPLETED);
-		minibatch.setError(null);
-		minibatch.setCompletedAt(Instant.now());
-		minibatchRepository.save(minibatch);
-		closeJob(job.getId());
+		persistenceService.persistCompleted(minibatchId, fasta, details, paramDetailsOf(response));
 	}
 
-	private void failOrRequeue(GenerationJobMinibatch minibatch, String reason) {
-		if (minibatch.getAttempts() < maxAttempts) {
-			minibatch.setStatus(GenerationJobMinibatch.STATUS_PENDING);
-			minibatch.setCoreInstanceId(null);
-			minibatch.setStartedAt(null);
-			minibatch.setError(reason);
-			log.info("Minibatch {} back to PENDING (attempt {}/{}): {}",
-					minibatch.getRunId(), minibatch.getAttempts(), maxAttempts, reason);
-		} else {
-			minibatch.setStatus(GenerationJobMinibatch.STATUS_ERROR);
-			minibatch.setError(reason);
-			minibatch.setCompletedAt(Instant.now());
-			log.warn("Minibatch {} ERROR after {} attempts: {}", minibatch.getRunId(), minibatch.getAttempts(), reason);
+	private boolean coreRunStillRunning(CoreInstance instance, String runId) {
+		Map<String, Object> status = coreSystem.getMpnnStatus(instance, runId);
+		return status != null && "RUNNING".equalsIgnoreCase(text(status, "status"));
+	}
+
+	@SuppressWarnings("unchecked")
+	private static Map<String, Object> paramDetailsOf(Map<String, Object> response) {
+		Object summary = response.get("summary");
+		if (!(summary instanceof Map<?, ?> map)) {
+			return null;
 		}
-		minibatchRepository.save(minibatch);
-		closeJob(minibatch.getGenerationJobId());
+		Object details = map.get("param_details");
+		if (details instanceof Map<?, ?> paramDetails) {
+			return (Map<String, Object>) paramDetails;
+		}
+		return null;
 	}
 
-	private void closeJob(Long jobId) {
-		GenerationJob job = generationJobRepository.findById(jobId).orElse(null);
-		if (job == null || job.getTotalMinibatches() == null) {
+	private void logRepeated(Long minibatchId, Exception error) {
+		String message = error.getMessage() != null ? error.getMessage() : error.getClass().getSimpleName();
+		RepeatedFailure previous = repeatedFailures.get(minibatchId);
+		if (previous == null || !previous.message.equals(message)) {
+			repeatedFailures.put(minibatchId, new RepeatedFailure(message, 1));
+			log.warn("Collect minibatch {} failed: {}", minibatchId, message, error);
 			return;
 		}
-		List<GenerationJobMinibatch> all = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(jobId);
-		int completed = (int) all.stream()
-				.filter(m -> GenerationJobMinibatch.STATUS_COMPLETED.equals(m.getStatus()))
-				.count();
-		job.setCompletedMinibatches(completed);
-		boolean terminal = all.stream().allMatch(m ->
-				GenerationJobMinibatch.STATUS_COMPLETED.equals(m.getStatus())
-						|| GenerationJobMinibatch.STATUS_ERROR.equals(m.getStatus()));
-		if (!terminal) {
-			generationJobRepository.save(job);
-			return;
+		int count = previous.count + 1;
+		repeatedFailures.put(minibatchId, new RepeatedFailure(message, count));
+		if (count % LOG_SUMMARY_EVERY == 0) {
+			log.warn("Collect minibatch {} still failing ({} cycles): {}", minibatchId, count, message);
 		}
-		job.setTotalRecords((int) recordRepository.countByGenerationJob_Id(jobId));
-		job.setCompletedAt(Instant.now());
-		boolean allOk = all.stream().allMatch(m -> GenerationJobMinibatch.STATUS_COMPLETED.equals(m.getStatus()));
-		if (allOk) {
-			StringBuilder fasta = new StringBuilder();
-			for (GenerationJobMinibatch minibatch : all) {
-				if (minibatch.getFasta() == null || minibatch.getFasta().isBlank()) {
-					continue;
-				}
-				if (!fasta.isEmpty()) {
-					fasta.append('\n');
-				}
-				fasta.append(minibatch.getFasta().strip());
-			}
-			job.setFasta(fasta.toString());
-			job.setBestPdb(bestPdb(jobId));
-			job.setStatus(GenerationJob.STATUS_COMPLETED);
-			job.setError(null);
-		} else {
-			String failed = all.stream()
-					.filter(m -> GenerationJobMinibatch.STATUS_ERROR.equals(m.getStatus()))
-					.map(m -> Integer.toString(m.getIdx()))
-					.reduce((a, b) -> a + "," + b)
-					.orElse("?");
-			job.setStatus(GenerationJob.STATUS_ERROR);
-			job.setError("minibatches failed: " + failed);
-		}
-		generationJobRepository.save(job);
-		if (job.getProject() != null) {
-			pdbCache.evictBestPdb(job.getProject().getId(), job.getId());
-			pdbCache.evictRecordPdbsForJob(job.getProject().getId(), job.getId());
-		}
-	}
-
-	private String bestPdb(Long jobId) {
-		String best = null;
-		double bestPtm = Double.NEGATIVE_INFINITY;
-		for (GenerationJobRecord record : recordRepository.findByGenerationJob_IdOrderByNAsc(jobId)) {
-			if (record.getPdb() == null || record.getPdb().isBlank()) {
-				continue;
-			}
-			double ptm = record.getPtm() == null ? Double.NEGATIVE_INFINITY : record.getPtm();
-			if (best == null || ptm > bestPtm) {
-				best = record.getPdb();
-				bestPtm = ptm;
-			}
-		}
-		return best;
 	}
 
 	@SuppressWarnings("unchecked")
@@ -236,4 +172,6 @@ public class MinibatchCollector {
 		Object value = map.get(key);
 		return value == null ? null : String.valueOf(value);
 	}
+
+	private record RepeatedFailure(String message, int count) {}
 }

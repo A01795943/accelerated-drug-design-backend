@@ -3,9 +3,16 @@ package edu.itesm.accelerated_drug_design_backend.entity;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 
+import java.time.Instant;
+
 @Entity
 @Table(name = "backbones")
 public class Backbone {
+
+	public static final String STATUS_QUEUED = "QUEUED";
+	public static final String STATUS_RUNNING = "RUNNING";
+	public static final String STATUS_COMPLETED = "COMPLETED";
+	public static final String STATUS_ERROR = "ERROR";
 
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -21,6 +28,9 @@ public class Backbone {
 
 	@Column(name = "run_id", length = 64)
 	private String runID;
+
+	@Column(name = "core_instance_id")
+	private Long coreInstanceId;
 
 	@Column(name = "status", length = 32)
 	private String status;
@@ -43,6 +53,12 @@ public class Backbone {
 	@Column(columnDefinition = "LONGTEXT")
 	@JsonIgnore
 	private String structure;
+
+	@Column(name = "dispatch_attempts", nullable = false)
+	private int dispatchAttempts = 0;
+
+	@Column(name = "next_dispatch_at")
+	private Instant nextDispatchAt;
 
 	@PrePersist
 	void prePersist() {
@@ -89,6 +105,14 @@ public class Backbone {
 
 	public void setRunID(String runID) {
 		this.runID = runID;
+	}
+
+	public Long getCoreInstanceId() {
+		return coreInstanceId;
+	}
+
+	public void setCoreInstanceId(Long coreInstanceId) {
+		this.coreInstanceId = coreInstanceId;
 	}
 
 	public String getStatus() {
@@ -145,5 +169,21 @@ public class Backbone {
 
 	public void setStructure(String structure) {
 		this.structure = structure;
+	}
+
+	public int getDispatchAttempts() {
+		return dispatchAttempts;
+	}
+
+	public void setDispatchAttempts(int dispatchAttempts) {
+		this.dispatchAttempts = dispatchAttempts;
+	}
+
+	public Instant getNextDispatchAt() {
+		return nextDispatchAt;
+	}
+
+	public void setNextDispatchAt(Instant nextDispatchAt) {
+		this.nextDispatchAt = nextDispatchAt;
 	}
 }

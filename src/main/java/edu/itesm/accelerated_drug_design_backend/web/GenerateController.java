@@ -1,18 +1,21 @@
 package edu.itesm.accelerated_drug_design_backend.web;
 
 import edu.itesm.accelerated_drug_design_backend.dto.GenerateResult;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerateSuggestionsResponse;
 import edu.itesm.accelerated_drug_design_backend.service.RfdiffusionParamService;
+import jakarta.validation.constraints.Min;
 import org.springframework.http.ResponseEntity;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Endpoints that return fixed placeholder values for "Generar" (generate) actions.
- * Replace with real logic later.
+ * RFdiffusion parameter generation (contigs, hotspots, chains to remove) via BioJava analysis.
  */
+@Validated
 @RestController
 @RequestMapping("/api/generate")
 @Tag(name = "Generate", description = "Generate contigs, hotspots, chains-to-remove for a project")
@@ -60,5 +63,17 @@ public class GenerateController {
 	@GetMapping("/all")
 	public ResponseEntity<GenerateResult> generateAll(@RequestParam("projectId") Long projectId) {
 		return ResponseEntity.ok(service.generateForProject(projectId));
+	}
+
+	@GetMapping("/suggestions")
+	public ResponseEntity<GenerateSuggestionsResponse> generateSuggestions(
+			@RequestParam("projectId") Long projectId,
+			@RequestParam("count") @Min(1) int count,
+			@RequestParam("minLength") @Min(1) int minLength,
+			@RequestParam("maxLength") @Min(1) int maxLength) {
+		if (maxLength < minLength) {
+			throw new IllegalArgumentException("maxLength must be >= minLength");
+		}
+		return ResponseEntity.ok(service.generateNForProject(projectId, count, minLength, maxLength));
 	}
 }

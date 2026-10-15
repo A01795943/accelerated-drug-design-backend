@@ -36,6 +36,13 @@ public interface CoreSystemInterface {
 	Map<String, Object> getMpnnStatus(CoreInstance instance, String runId);
 
 	/**
+	 * GET /run/mpnn/status/{runId} without mapping 404 to an error body.
+	 * {@link RunPresence#PRESENT} when the core knows the run, {@link RunPresence#ABSENT} on 404,
+	 * {@link RunPresence#UNKNOWN} when the instance cannot be reached.
+	 */
+	RunPresence probeMpnnRun(CoreInstance instance, String runId);
+
+	/**
 	 * Get one batch of MPNN detail records for a completed run from the given instance. Returns null if the request fails.
 	 */
 	Map<String, Object> getMpnnStatusDetail(CoreInstance instance, String runId, int batch);

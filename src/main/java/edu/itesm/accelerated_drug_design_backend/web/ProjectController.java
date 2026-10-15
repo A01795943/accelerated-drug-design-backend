@@ -30,7 +30,7 @@ public class ProjectController {
 	}
 
 	@GetMapping
-	@Operation(summary = "List projects", description = "Returns all projects (summary: id, name, description).")
+	@Operation(summary = "List projects", description = "Returns all projects (summary: id, name, description, targetPdbId, ecNumber).")
 	@ApiResponses({
 			@ApiResponse(responseCode = "200", description = "Success"),
 			@ApiResponse(responseCode = "401", description = "Unauthorized"),
@@ -41,7 +41,7 @@ public class ProjectController {
 	}
 
 	@GetMapping("/{id}")
-	@Operation(summary = "Get project", description = "Returns project summary by ID.")
+	@Operation(summary = "Get project", description = "Returns project summary by ID (id, name, description, targetPdbId, ecNumber).")
 	@ApiResponses({
 			@ApiResponse(responseCode = "200", description = "Success"),
 			@ApiResponse(responseCode = "404", description = "Project not found"),
@@ -79,5 +79,16 @@ public class ProjectController {
 	public ResponseEntity<Project> createProject(@Valid @RequestBody CreateProjectRequest request) {
 		Project created = projectService.createProject(request);
 		return ResponseEntity.status(HttpStatus.CREATED).body(created);
+	}
+
+	@PostMapping("/{id}/resolve-ec")
+	@Operation(summary = "Resolve EC metadata", description = "Admin only. Recomputes target PDB ID and EC number from the stored target PDB.")
+	@ApiResponses({
+			@ApiResponse(responseCode = "200", description = "Updated summary"),
+			@ApiResponse(responseCode = "400", description = "Project not found"),
+			@ApiResponse(responseCode = "403", description = "Forbidden")
+	})
+	public ResponseEntity<ProjectSummaryDto> resolveEc(@PathVariable Long id) {
+		return ResponseEntity.ok(projectService.resolveEc(id));
 	}
 }

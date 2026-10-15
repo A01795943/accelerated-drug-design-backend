@@ -50,7 +50,7 @@ public class BackboneController {
 	}
 
 	@PostMapping
-	@Operation(summary = "Create backbones", description = "Starts RFdiffusion run; creates one or more backbones (status RUNNING). Poll status via GET .../status/{runId}.")
+	@Operation(summary = "Create backbones", description = "Enqueues an RFdiffusion run (status QUEUED). The dispatcher assigns an instance and starts the core job. Poll status via GET .../status/{runId}.")
 	@ApiResponses({
 			@ApiResponse(responseCode = "201", description = "Created"),
 			@ApiResponse(responseCode = "400", description = "Invalid request (e.g. backbone not ready)"),

@@ -1,12 +1,12 @@
 package edu.itesm.accelerated_drug_design_backend.repository;
 
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch;
-import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -22,9 +22,37 @@ public interface GenerationJobMinibatchRepository extends JpaRepository<Generati
 			""")
 	List<GenerationJobMinibatch> findByStatusOrderByJobThenIdx(@Param("status") String status);
 
-	@Lock(LockModeType.PESSIMISTIC_WRITE)
-	@Query("SELECT m FROM GenerationJobMinibatch m WHERE m.id = :id")
-	Optional<GenerationJobMinibatch> findByIdForUpdate(@Param("id") Long id);
+	@Modifying(clearAutomatically = true, flushAutomatically = true)
+	@Query("""
+			UPDATE GenerationJobMinibatch m
+			SET m.status = :running,
+				m.coreInstanceId = :instanceId,
+				m.startedAt = COALESCE(m.startedAt, :startedAt)
+			WHERE m.id = :id AND m.status = :pending
+			""")
+	int adoptIfPending(
+			@Param("id") Long id,
+			@Param("instanceId") Long instanceId,
+			@Param("startedAt") Instant startedAt,
+			@Param("pending") String pending,
+			@Param("running") String running);
+
+	@Modifying(clearAutomatically = true, flushAutomatically = true)
+	@Query("""
+			UPDATE GenerationJobMinibatch m
+			SET m.status = :running,
+				m.coreInstanceId = :instanceId,
+				m.startedAt = :startedAt,
+				m.attempts = m.attempts + 1,
+				m.error = NULL
+			WHERE m.id = :id AND m.status = :pending
+			""")
+	int claimIfPending(
+			@Param("id") Long id,
+			@Param("instanceId") Long instanceId,
+			@Param("startedAt") Instant startedAt,
+			@Param("pending") String pending,
+			@Param("running") String running);
 
 	Optional<GenerationJobMinibatch> findByRunId(String runId);
 

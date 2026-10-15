@@ -15,13 +15,16 @@ import edu.itesm.accelerated_drug_design_backend.repository.CoreInstanceReposito
 import edu.itesm.accelerated_drug_design_backend.repository.DataGenerationCampaignRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.ProjectRepository;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 import java.util.Map;
@@ -77,6 +80,12 @@ class CampaignPlannerDispatchIntegrationTest {
 	@Autowired
 	private CoreInstanceRepository coreInstanceRepository;
 
+	@Autowired
+	private PlatformTransactionManager transactionManager;
+
+	@Autowired
+	private EntityManager entityManager;
+
 	@MockitoBean
 	private CoreSystemInterface coreSystem;
 
@@ -85,6 +94,22 @@ class CampaignPlannerDispatchIntegrationTest {
 		when(coreSystem.getMpnnStatus(any(), any())).thenReturn(null);
 		when(coreSystem.getRfdiffusionStatus(any(), any())).thenReturn(null);
 		clearInvocations(coreSystem);
+		// Status updates from the metrics poller commit outside the test transaction.
+		new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+			for (CoreInstance instance : coreInstanceRepository.findAll()) {
+				instance.setStatus(CoreInstance.STATUS_AVAILABLE);
+				instance.setStatusReason(null);
+				instance.setConsecutiveFailures(0);
+			}
+			for (edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch minibatch : minibatchRepository.findAll()) {
+				if (edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch.STATUS_PENDING.equals(minibatch.getStatus())
+						|| edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch.STATUS_RUNNING.equals(minibatch.getStatus())) {
+					minibatch.setStatus(edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch.STATUS_ERROR);
+					minibatch.setCoreInstanceId(null);
+				}
+			}
+		});
+		entityManager.clear();
 	}
 
 	@Test
@@ -94,7 +119,7 @@ class CampaignPlannerDispatchIntegrationTest {
 
 		List<GenerationJob> created = generationJobRepository.findByProject_IdOrderByIdDesc(prepared.projectId());
 		assertEquals(3, created.size());
-		assertTrue(created.stream().allMatch(j -> GenerationJob.STATUS_RUNNING.equals(j.getStatus())));
+		assertTrue(created.stream().allMatch(j -> GenerationJob.STATUS_QUEUED.equals(j.getStatus())));
 		assertTrue(created.stream().allMatch(j -> j.getTotalMinibatches() != null && j.getTotalMinibatches() >= 1));
 
 		persistFreeInstance("http://10.0.0.41:8000");
@@ -103,6 +128,8 @@ class CampaignPlannerDispatchIntegrationTest {
 		minibatchDispatcher.dispatchPending();
 
 		verify(coreSystem, times(3)).triggerMpnn(any(), any());
+		assertTrue(generationJobRepository.findByProject_IdOrderByIdDesc(prepared.projectId()).stream()
+				.allMatch(j -> GenerationJob.STATUS_RUNNING.equals(j.getStatus())));
 
 		assertEquals(DataGenerationCampaign.STATUS_RUNNING,
 				campaignRepository.findById(prepared.campaignId()).orElseThrow().getStatus());

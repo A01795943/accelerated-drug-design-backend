@@ -22,6 +22,15 @@ public class Project {
 	@Column(columnDefinition = "TEXT")
 	private String description;
 
+	@Column(name = "target_pdb_id", length = 16)
+	private String targetPdbId;
+
+	@Column(name = "ec_number", length = 16)
+	private String ecNumber;
+
+	@Column(name = "ec_lineage", length = 255)
+	private String ecLineage;
+
 	public Long getId() {
 		return id;
 	}
@@ -60,5 +69,29 @@ public class Project {
 
 	public void setDescription(String description) {
 		this.description = description;
+	}
+
+	public String getTargetPdbId() {
+		return targetPdbId;
+	}
+
+	public void setTargetPdbId(String targetPdbId) {
+		this.targetPdbId = targetPdbId;
+	}
+
+	public String getEcNumber() {
+		return ecNumber;
+	}
+
+	public void setEcNumber(String ecNumber) {
+		this.ecNumber = ecNumber;
+	}
+
+	public String getEcLineage() {
+		return ecLineage;
+	}
+
+	public void setEcLineage(String ecLineage) {
+		this.ecLineage = ecLineage;
 	}
 }

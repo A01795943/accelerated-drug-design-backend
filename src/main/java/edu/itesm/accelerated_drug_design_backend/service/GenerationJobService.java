@@ -2,10 +2,15 @@ package edu.itesm.accelerated_drug_design_backend.service;
 
 import edu.itesm.accelerated_drug_design_backend.cache.PdbCacheService;
 import edu.itesm.accelerated_drug_design_backend.core.CoreSystemInterface;
+import edu.itesm.accelerated_drug_design_backend.dto.BackboneFilterOption;
+import edu.itesm.accelerated_drug_design_backend.dto.ConsolidateCsvRequest;
+import edu.itesm.accelerated_drug_design_backend.dto.ConsolidatedCsvRow;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobDetailDto;
 import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobPageResponse;
 import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobRecordListDto;
+import edu.itesm.accelerated_drug_design_backend.dto.JobStatusView;
 import edu.itesm.accelerated_drug_design_backend.dto.ProteinMpnnRunRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
@@ -19,10 +24,21 @@ import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRecordR
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.JpaSort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
 import java.util.regex.Matcher;
@@ -36,6 +52,10 @@ public class GenerationJobService {
 	private static final String STATUS_ERROR = "ERROR";
 	private static final String STATUS_RUNNING = "RUNNING";
 	private static final String STATUS_QUEUED = GenerationJob.STATUS_QUEUED;
+	private static final int LIST_PAGE_DEFAULT = 10;
+	private static final int LIST_PAGE_MAX = 200;
+	private static final int CSV_ID_CHUNK = 400;
+	private static final int CSV_ROW_BATCH = 500;
 
 	private final GenerationJobRepository generationJobRepository;
 	private final GenerationJobRecordRepository generationJobRecordRepository;
@@ -47,6 +67,14 @@ public class GenerationJobService {
 	private final PdbCacheService pdbCache;
 	private final EDAService edaService;
 	private final int minibatchSize;
+	private final BinderKeyService binderKeyService;
+	private final SettingsService settingsService;
+	private ObjectProvider<GenerationJobService> self;
+
+	@Autowired
+	void setSelf(ObjectProvider<GenerationJobService> self) {
+		this.self = self;
+	}
 
 	public GenerationJobService(GenerationJobRepository generationJobRepository,
 			GenerationJobRecordRepository generationJobRecordRepository,
@@ -57,6 +85,8 @@ public class GenerationJobService {
 			CoreInstanceResolver coreInstanceResolver,
 			PdbCacheService pdbCache,
 			EDAService edaService,
+			BinderKeyService binderKeyService,
+			SettingsService settingsService,
 			@org.springframework.beans.factory.annotation.Value("${app.generation.minibatch-size:100}") int minibatchSize) {
 		this.generationJobRepository = generationJobRepository;
 		this.generationJobRecordRepository = generationJobRecordRepository;
@@ -67,6 +97,8 @@ public class GenerationJobService {
 		this.coreInstanceResolver = coreInstanceResolver;
 		this.pdbCache = pdbCache;
 		this.edaService = edaService;
+		this.binderKeyService = binderKeyService;
+		this.settingsService = settingsService;
 		this.minibatchSize = Math.max(1, minibatchSize);
 	}
 
@@ -84,30 +116,146 @@ public class GenerationJobService {
 	@Transactional(readOnly = true)
 	public List<GenerationJobListItem> findListItemsByProjectId(Long projectId) {
 		List<GenerationJobListItem> items = generationJobRepository.findListItemsByProjectId(projectId);
-		for (GenerationJobListItem item : items) {
-			// Max pTM / iPTM per job
-			try {
-				Double maxPtm = generationJobRecordRepository.findMaxPtmByProjectIdAndJobId(projectId, item.getId());
-				item.setMaxPtm(maxPtm);
-				Double maxIPtm = generationJobRecordRepository.findMaxIPtmByProjectIdAndJobId(projectId, item.getId());
-				item.setMaxIPtm(maxIPtm);
-			} catch (Exception e) {
-				log.debug("Could not compute max pTM/iPTM for job {}: {}", item.getId(), e.getMessage());
-				item.setMaxPtm(null);
-				item.setMaxIPtm(null);
-			}
+		enrichListItems(projectId, items);
+		return items;
+	}
 
-			if (STATUS_COMPLETED.equals(item.getStatus())) {
-				try {
-					double q = edaService.getDatasetQuality(projectId, item.getId());
-					item.setQuality(q);
-				} catch (Exception e) {
-					log.debug("Could not compute quality for job {}: {}", item.getId(), e.getMessage());
-					item.setQuality(null);
-				}
+	/**
+	 * One page of generation jobs. An empty {@code backboneIds} means no backbone filter.
+	 * Columns stored on the job are sorted in SQL. quality, maxPtm, maxIPtm and elapsed are
+	 * computed over the filtered set and then sliced, matching the previous on-screen sort.
+	 */
+	@Transactional(readOnly = true)
+	public GenerationJobPageResponse findListPage(Long projectId, List<Long> backboneIds, int page, int size,
+			String sort, String direction) {
+		List<Long> backbones = normalizeIds(backboneIds);
+		int pageSize = size > 0 ? Math.min(size, LIST_PAGE_MAX) : LIST_PAGE_DEFAULT;
+		int pageIndex = Math.max(page, 0);
+		boolean asc = "asc".equalsIgnoreCase(direction);
+		long consolidatable = countCompleted(projectId, backbones);
+		if (isComputedSort(sort)) {
+			List<GenerationJobListItem> all = backbones.isEmpty()
+					? generationJobRepository.findListItemsByProjectId(projectId)
+					: generationJobRepository.findListItemsByProjectIdAndBackboneIdIn(projectId, backbones);
+			enrichListItems(projectId, all);
+			all.sort((a, b) -> compareListItems(a, b, sort, asc));
+			int total = all.size();
+			int totalPages = total == 0 ? 0 : (int) Math.ceil(total / (double) pageSize);
+			int from = Math.min(pageIndex * pageSize, total);
+			int to = Math.min(from + pageSize, total);
+			return new GenerationJobPageResponse(
+					new ArrayList<>(all.subList(from, to)), total, totalPages, pageIndex, pageSize, consolidatable);
+		}
+		Sort order = toSort(sort, asc);
+		Page<GenerationJobListItem> result = backbones.isEmpty()
+				? generationJobRepository.pageListItemsByProjectId(projectId, PageRequest.of(pageIndex, pageSize, order))
+				: generationJobRepository.pageListItemsByProjectIdAndBackboneIdIn(
+						projectId, backbones, PageRequest.of(pageIndex, pageSize, order));
+		enrichListItems(projectId, result.getContent());
+		return new GenerationJobPageResponse(
+				result.getContent(),
+				result.getTotalElements(),
+				result.getTotalPages(),
+				pageIndex,
+				pageSize,
+				consolidatable);
+	}
+
+	@Transactional(readOnly = true)
+	public List<BackboneFilterOption> findBackbonesWithJobs(Long projectId) {
+		return generationJobRepository.findBackbonesWithJobs(projectId);
+	}
+
+	/** COMPLETED job ids for the project, optionally restricted to the given backbones. */
+	@Transactional(readOnly = true)
+	public List<Long> findConsolidatableIds(Long projectId, List<Long> backboneIds) {
+		List<Long> backbones = normalizeIds(backboneIds);
+		if (backbones.isEmpty()) {
+			return generationJobRepository.findIdsByProjectIdAndStatus(projectId, STATUS_COMPLETED);
+		}
+		return generationJobRepository.findIdsByProjectIdAndStatusAndBackboneIdIn(
+				projectId, STATUS_COMPLETED, backbones);
+	}
+
+	/**
+	 * Jobs the consolidated CSV will include. Explicit ids must exist in the project and be COMPLETED.
+	 * {@code selectAllFiltered} resolves every COMPLETED job for the backbone filter
+	 * (every backbone in the project when the filter is empty).
+	 */
+	@Transactional(readOnly = true)
+	public List<Long> resolveConsolidatableJobIds(Long projectId, ConsolidateCsvRequest request) {
+		if (request == null) {
+			throw new IllegalArgumentException("No jobs selected");
+		}
+		if (request.isSelectAllFiltered()) {
+			Set<Long> excluded = new HashSet<>(normalizeIds(request.getExcludedJobIds()));
+			List<Long> ids = findConsolidatableIds(projectId, request.getBackboneIds()).stream()
+					.filter(id -> !excluded.contains(id))
+					.toList();
+			if (ids.isEmpty()) {
+				throw new IllegalArgumentException("No jobs selected");
+			}
+			return ids;
+		}
+		List<Long> requested = normalizeIds(request.getJobIds());
+		if (requested.isEmpty()) {
+			throw new IllegalArgumentException("No jobs selected");
+		}
+		Map<Long, String> statusById = new HashMap<>();
+		for (List<Long> chunk : partition(requested, CSV_ID_CHUNK)) {
+			for (JobStatusView view : generationJobRepository.findStatusByProjectIdAndIdIn(projectId, chunk)) {
+				statusById.put(view.id(), view.status());
 			}
 		}
-		return items;
+		for (Long id : requested) {
+			String status = statusById.get(id);
+			if (status == null) {
+				throw new IllegalArgumentException("Job " + id + " does not exist in this project");
+			}
+			if (!STATUS_COMPLETED.equals(status)) {
+				throw new IllegalArgumentException("Job " + id + " is not COMPLETED");
+			}
+		}
+		return requested.stream().distinct().sorted().toList();
+	}
+
+	/** Streams the consolidated CSV. Callers must pass ids already validated as COMPLETED in this project. */
+	@Transactional(readOnly = true)
+	public void writeConsolidatedCsv(Long projectId, List<Long> jobIds, OutputStream outputStream) throws IOException {
+		List<Long> sorted = jobIds == null
+				? List.of()
+				: jobIds.stream().filter(Objects::nonNull).distinct().sorted().toList();
+		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
+		try {
+			ConsolidatedCsvWriter.writeHeader(writer);
+			for (List<Long> chunk : partition(sorted, CSV_ID_CHUNK)) {
+				long lastJobId = 0L;
+				int lastN = -1;
+				while (true) {
+					List<ConsolidatedCsvRow> batch = generationJobRecordRepository.findConsolidatedBatch(
+							projectId, STATUS_COMPLETED, chunk, lastJobId, lastN, PageRequest.of(0, CSV_ROW_BATCH));
+					if (batch.isEmpty()) {
+						break;
+					}
+					for (ConsolidatedCsvRow row : batch) {
+						ConsolidatedCsvWriter.writeRow(writer, row);
+					}
+					ConsolidatedCsvRow last = batch.get(batch.size() - 1);
+					if (last.jobId() != null) {
+						lastJobId = last.jobId();
+					}
+					if (last.n() != null) {
+						lastN = last.n();
+					}
+					writer.flush();
+					if (batch.size() < CSV_ROW_BATCH) {
+						break;
+					}
+				}
+			}
+		} finally {
+			writer.flush();
+		}
 	}
 
 	public Optional<GenerationJob> findByProjectIdAndRunId(Long projectId, String runId) {
@@ -259,7 +407,7 @@ public class GenerationJobService {
 		job.setProject(projectService.findEntityById(projectId));
 		job.setBackbone(backbone);
 		job.setCoreInstanceId(null);
-		job.setStatus(STATUS_RUNNING);
+		job.setStatus(STATUS_QUEUED);
 		job.setTemperature(temperature);
 		job.setNumSeqs(numSeqs);
 		job.setCreatedAt(Instant.now());
@@ -283,12 +431,10 @@ public class GenerationJobService {
 		return job;
 	}
 
-	@Transactional
 	public GenerationJob checkRunStatus(Long projectId, String runId) {
 		return checkRunStatus(projectId, runId, null);
 	}
 
-	@Transactional
 	public GenerationJob checkRunStatus(Long projectId, String runId, CoreInstance instanceOverride) {
 		GenerationJob job = generationJobRepository.findByProject_IdAndRunId(projectId, runId).orElse(null);
 		if (job == null) {
@@ -310,32 +456,57 @@ public class GenerationJobService {
 
 		Map<String, Object> response = coreSystem.getMpnnStatus(instance, runId);
 		if (response == null) {
-			return job;
+			return generationJobRepository.findById(job.getId()).orElse(job);
 		}
 
 		String status = getString(response, "status");
 		if (status == null || status.isBlank()) {
-			return job;
+			return generationJobRepository.findById(job.getId()).orElse(job);
 		}
 		status = status.toUpperCase().strip();
-		job.setStatus(status);
-		if (job.getCoreInstanceId() == null && instance.getId() != null) {
-			job.setCoreInstanceId(instance.getId());
-		}
 
+		List<Map<String, Object>> details = new ArrayList<>();
 		if (STATUS_COMPLETED.equals(status)) {
-			// Summary: core returns summary.fasta_content, summary.best_pdb_content (and top-level output_fasta)
+			Map<String, Object> pagination = getMap(response, "pagination");
+			Integer totalBatches = pagination != null ? getInteger(pagination, "total_batches") : null;
+			if (totalBatches == null) {
+				totalBatches = getInteger(response, "total_batches");
+			}
+			int batches = totalBatches != null && totalBatches > 0 ? totalBatches : 0;
+			for (int b = 0; b < batches; b++) {
+				Map<String, Object> detailResponse = coreSystem.getMpnnStatusDetail(instance, runId, b);
+				if (detailResponse != null) {
+					details.add(detailResponse);
+				}
+			}
+		}
+		return self.getObject().applyMpnnStatus(job.getId(), instance.getId(), status, response, details);
+	}
+
+	@Transactional(isolation = Isolation.READ_COMMITTED, timeout = 15)
+	public GenerationJob applyMpnnStatus(
+			Long jobId,
+			Long instanceId,
+			String status,
+			Map<String, Object> response,
+			List<Map<String, Object>> details) {
+		GenerationJob job = generationJobRepository.findById(jobId).orElse(null);
+		if (job == null) {
+			return null;
+		}
+		job.setStatus(status);
+		if (job.getCoreInstanceId() == null && instanceId != null) {
+			job.setCoreInstanceId(instanceId);
+		}
+		if (STATUS_COMPLETED.equals(status)) {
 			Map<String, Object> summary = getMap(response, "summary");
 			String fastaContent = summary != null ? getString(summary, "fasta_content") : null;
 			if (fastaContent == null) fastaContent = getString(response, "output_fasta");
 			String bestPdbContent = summary != null ? getString(summary, "best_pdb_content") : null;
 			if (bestPdbContent == null) bestPdbContent = getString(response, "best_pdb_content");
-			// Pagination: core returns pagination.total_records, pagination.total_batches
 			Map<String, Object> pagination = getMap(response, "pagination");
 			Integer totalRecords = pagination != null ? getInteger(pagination, "total_records") : null;
 			if (totalRecords == null) totalRecords = getInteger(response, "total_records");
-			Integer totalBatches = pagination != null ? getInteger(pagination, "total_batches") : null;
-			if (totalBatches == null) totalBatches = getInteger(response, "total_batches");
 
 			job.setFasta(fastaContent);
 			job.setBestPdb(bestPdbContent);
@@ -344,21 +515,21 @@ public class GenerationJobService {
 			if (job.getCompletedAt() == null) {
 				job.setCompletedAt(Instant.now());
 			}
-
 			generationJobRecordRepository.deleteByGenerationJob_Id(job.getId());
-
-			// Core detail is on GET /run/mpnn/status/{run_id}/detail?batch=N; fetch each batch and save records
-			int batches = totalBatches != null && totalBatches > 0 ? totalBatches : 0;
-			for (int b = 0; b < batches; b++) {
-				Map<String, Object> detailResponse = coreSystem.getMpnnStatusDetail(instance, runId, b);
-				if (detailResponse != null) {
-					saveDetailRecordsFromResponse(job, detailResponse, fastaContent, 0);
+			List<GenerationJobRecord> rows = new ArrayList<>();
+			if (details != null) {
+				for (Map<String, Object> detail : details) {
+					rows.addAll(buildDetailRecords(job, fastaContent, detail, 0));
 				}
 			}
+			if (!rows.isEmpty()) {
+				generationJobRecordRepository.saveAll(rows);
+			}
 			generationJobRepository.save(job);
-			// Evict cached PDBs so next read loads fresh best PDB and record PDBs from DB
-			pdbCache.evictBestPdb(projectId, job.getId());
-			pdbCache.evictRecordPdbsForJob(projectId, job.getId());
+			if (job.getProject() != null) {
+				pdbCache.evictBestPdb(job.getProject().getId(), job.getId());
+				pdbCache.evictRecordPdbsForJob(job.getProject().getId(), job.getId());
+			}
 		} else if (STATUS_ERROR.equals(status)) {
 			String errorDetails = getString(response, "error_details");
 			if (errorDetails == null) errorDetails = getString(response, "error");
@@ -392,6 +563,34 @@ public class GenerationJobService {
 		return generationJobRepository.markRunningIfQueued(runId, instanceId, STATUS_QUEUED, STATUS_RUNNING);
 	}
 
+	/** Promotes a queued minibatch job after its first chunk is posted. Leaves RUNNING jobs unchanged. */
+	public int markRunningIfStillQueued(Long jobId) {
+		try {
+			return DbLockRetry.call("mark job running", () -> self.getObject().markRunningOnce(jobId));
+		} catch (RuntimeException ex) {
+			if (DbLockRetry.isLockFailure(ex)) {
+				log.warn("Job {} stayed unchanged after lock retries: {}", jobId, ex.getMessage());
+				return 0;
+			}
+			throw ex;
+		}
+	}
+
+	@Transactional(isolation = Isolation.READ_COMMITTED, timeout = 5)
+	public int markRunningOnce(Long jobId) {
+		return generationJobRepository.markRunningIfStillQueued(jobId, STATUS_QUEUED, STATUS_RUNNING);
+	}
+
+	/**
+	 * Every binder key stored for the backbone. A retry is not excluded by an
+	 * n-range anymore: {@link BinderKeyService#keysToExclude} omits the current
+	 * minibatch id instead.
+	 */
+	@Transactional(readOnly = true)
+	public List<String> binderKeysToSkip(Long backboneId, Long jobId, int fromN, int toN) {
+		return binderKeyService.keysToExclude(backboneId, null);
+	}
+
 	public void triggerQueuedMpnn(String runId, CoreInstance instance) {
 		GenerationJob job = generationJobRepository.findByRunId(runId)
 				.orElseThrow(() -> new IllegalStateException("No generation job for runId=" + runId));
@@ -404,6 +603,10 @@ public class GenerationJobService {
 		coreRequest.setNumSeqs(job.getNumSeqs() != null ? job.getNumSeqs() : 16);
 		coreRequest.setMpnnSamplingTemp(job.getTemperature() != null ? job.getTemperature() : 0.1);
 		coreRequest.setUseAlphafold(true);
+		coreRequest.setSeed(MpnnSampling.seedFor(job.getId(), 0));
+		int numSeqs = job.getNumSeqs() != null ? job.getNumSeqs() : 16;
+		coreRequest.setMaxAttempts(numSeqs * settingsService.maxAttemptFactor());
+		coreRequest.setExcludeBinderSeqs(binderKeyService.keysToExclude(backbone.getId(), null));
 		coreSystem.triggerMpnn(instance, coreRequest);
 	}
 
@@ -436,16 +639,25 @@ public class GenerationJobService {
 
 	@Transactional
 	public void saveMinibatchDetails(GenerationJob job, String fastaContent, Map<String, Object> detailResponse, int nOffset) {
-		saveDetailRecordsFromResponse(job, detailResponse, fastaContent, nOffset);
+		List<GenerationJobRecord> rows = buildDetailRecords(job, fastaContent, detailResponse, nOffset);
+		if (!rows.isEmpty()) {
+			generationJobRecordRepository.saveAll(rows);
+		}
+	}
+
+	public List<GenerationJobRecord> buildDetailRecords(
+			GenerationJob job, String fastaContent, Map<String, Object> detailResponse, int nOffset) {
+		return mapDetailRecords(job, detailResponse, fastaContent, nOffset);
 	}
 
 	@SuppressWarnings("unchecked")
-	private void saveDetailRecordsFromResponse(GenerationJob job, Map<String, Object> batchResponse, String fastaContent, int nOffset) {
+	private List<GenerationJobRecord> mapDetailRecords(GenerationJob job, Map<String, Object> batchResponse, String fastaContent, int nOffset) {
 		Object recordsObj = batchResponse.get("detail");
 		if (recordsObj == null) recordsObj = batchResponse.get("records");
 		if (recordsObj == null) recordsObj = batchResponse.get("detail_records");
-		if (!(recordsObj instanceof List)) return;
+		if (!(recordsObj instanceof List)) return List.of();
 		List<Map<String, Object>> records = (List<Map<String, Object>>) recordsObj;
+		List<GenerationJobRecord> mapped = new ArrayList<>();
 
 		List<FastaEntry> fastaEntries = parseFastaMetrics(fastaContent);
 		Map<Integer, FastaEntry> byN = new HashMap<>();
@@ -480,8 +692,9 @@ public class GenerationJobService {
 			if (record.getN() != null) {
 				record.setN(record.getN() + nOffset);
 			}
-			generationJobRecordRepository.save(record);
+			mapped.add(record);
 		}
+		return mapped;
 	}
 
 	/** Normalize sequence for comparison: trim, collapse whitespace/newlines. */
@@ -654,6 +867,112 @@ public class GenerationJobService {
 		} catch (NumberFormatException e) {
 			return null;
 		}
+	}
+
+	private void enrichListItems(Long projectId, List<GenerationJobListItem> items) {
+		for (GenerationJobListItem item : items) {
+			try {
+				item.setMaxPtm(generationJobRecordRepository.findMaxPtmByProjectIdAndJobId(projectId, item.getId()));
+				item.setMaxIPtm(generationJobRecordRepository.findMaxIPtmByProjectIdAndJobId(projectId, item.getId()));
+			} catch (Exception e) {
+				log.debug("Could not compute max pTM/iPTM for job {}: {}", item.getId(), e.getMessage());
+				item.setMaxPtm(null);
+				item.setMaxIPtm(null);
+			}
+			if (STATUS_COMPLETED.equals(item.getStatus())) {
+				try {
+					item.setQuality(edaService.getDatasetQuality(projectId, item.getId()));
+				} catch (Exception e) {
+					log.debug("Could not compute quality for job {}: {}", item.getId(), e.getMessage());
+					item.setQuality(null);
+				}
+			}
+		}
+	}
+
+	private long countCompleted(Long projectId, List<Long> backbones) {
+		if (backbones.isEmpty()) {
+			return generationJobRepository.countByProject_IdAndStatus(projectId, STATUS_COMPLETED);
+		}
+		return generationJobRepository.countByProject_IdAndStatusAndBackbone_IdIn(
+				projectId, STATUS_COMPLETED, backbones);
+	}
+
+	private static boolean isComputedSort(String sort) {
+		return "quality".equals(sort) || "maxPtm".equals(sort) || "maxIPtm".equals(sort) || "elapsed".equals(sort);
+	}
+
+	private static Sort toSort(String sort, boolean asc) {
+		Sort.Direction direction = asc ? Sort.Direction.ASC : Sort.Direction.DESC;
+		String expression = switch (sort == null ? "" : sort) {
+			case "runId" -> "j.runId";
+			case "backbone" -> "b.name";
+			case "temperature" -> "j.temperature";
+			case "numSeqs" -> "j.numSeqs";
+			case "createdAt" -> "j.createdAt";
+			case "completedAt" -> "j.completedAt";
+			default -> "j.id";
+		};
+		return JpaSort.unsafe(direction, expression);
+	}
+
+	/** Nulls stay last, independent of direction, same as the job table. */
+	private static int compareListItems(GenerationJobListItem a, GenerationJobListItem b, String sort, boolean asc) {
+		int dir = asc ? 1 : -1;
+		return switch (sort) {
+			case "quality" -> compareNullable(a.getQuality(), b.getQuality(), dir);
+			case "maxPtm" -> compareNullable(a.getMaxPtm(), b.getMaxPtm(), dir);
+			case "maxIPtm" -> compareNullable(a.getMaxIPtm(), b.getMaxIPtm(), dir);
+			case "elapsed" -> compareNullable(elapsedMillis(a), elapsedMillis(b), dir);
+			default -> 0;
+		};
+	}
+
+	private static int compareNullable(Double a, Double b, int dir) {
+		if (a == null && b == null) {
+			return 0;
+		}
+		if (a == null) {
+			return 1;
+		}
+		if (b == null) {
+			return -1;
+		}
+		int cmp = Double.compare(a, b);
+		if (cmp == 0) {
+			return 0;
+		}
+		return cmp < 0 ? -dir : dir;
+	}
+
+	private static Double elapsedMillis(GenerationJobListItem job) {
+		if (job.getCreatedAt() == null || job.getCompletedAt() == null) {
+			return null;
+		}
+		long created = job.getCreatedAt().toEpochMilli();
+		long completed = job.getCompletedAt().toEpochMilli();
+		if (completed < created) {
+			return null;
+		}
+		return (double) (completed - created);
+	}
+
+	private static List<Long> normalizeIds(List<Long> ids) {
+		if (ids == null || ids.isEmpty()) {
+			return List.of();
+		}
+		return ids.stream().filter(Objects::nonNull).distinct().toList();
+	}
+
+	private static <T> List<List<T>> partition(List<T> items, int size) {
+		if (items.isEmpty()) {
+			return List.of();
+		}
+		List<List<T>> parts = new ArrayList<>();
+		for (int i = 0; i < items.size(); i += size) {
+			parts.add(new ArrayList<>(items.subList(i, Math.min(i + size, items.size()))));
+		}
+		return parts;
 	}
 
 	private static String generateRunID() {

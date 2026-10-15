@@ -3,6 +3,7 @@ package edu.itesm.accelerated_drug_design_backend.core;
 import edu.itesm.accelerated_drug_design_backend.dto.ProteinMpnnRunRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RfdiffusionRunRequest;
 import edu.itesm.accelerated_drug_design_backend.entity.CoreInstance;
+import edu.itesm.accelerated_drug_design_backend.service.RepeatedLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +27,7 @@ import java.util.Map;
 public class CoreSystemService implements CoreSystemInterface {
 
 	private static final Logger log = LoggerFactory.getLogger(CoreSystemService.class);
+	private final RepeatedLog repeatedLog = new RepeatedLog(10);
 
 	private static final String RFDIFFUSION_PATH = "/run/rfdiffusion";
 	private static final String MPNN_PATH = "/run/mpnn";
@@ -37,20 +39,34 @@ public class CoreSystemService implements CoreSystemInterface {
 		RestTemplate create(int connectTimeoutMs, int readTimeoutMs);
 	}
 
+	private static final int PROBE_CONNECT_MS = 3_000;
+	private static final int PROBE_READ_MS = 10_000;
+
 	private final int defaultConnectTimeoutMs;
 	private final int defaultReadTimeoutMs;
+	private final int healthTimeoutMs;
 	private final ClientFactory clientFactory;
 
 	@Autowired
 	public CoreSystemService(
 			@Value("${app.core.connect-timeout-ms:10000}") int defaultConnectTimeoutMs,
-			@Value("${app.core.read-timeout-ms:120000}") int defaultReadTimeoutMs) {
-		this(defaultConnectTimeoutMs, defaultReadTimeoutMs, CoreSystemService::buildRestTemplate);
+			@Value("${app.core.read-timeout-ms:120000}") int defaultReadTimeoutMs,
+			@Value("${app.core.health-timeout-ms:3000}") int healthTimeoutMs) {
+		this(defaultConnectTimeoutMs, defaultReadTimeoutMs, healthTimeoutMs, CoreSystemService::buildRestTemplate);
 	}
 
 	CoreSystemService(int defaultConnectTimeoutMs, int defaultReadTimeoutMs, ClientFactory clientFactory) {
+		this(defaultConnectTimeoutMs, defaultReadTimeoutMs, PROBE_CONNECT_MS, clientFactory);
+	}
+
+	CoreSystemService(
+			int defaultConnectTimeoutMs,
+			int defaultReadTimeoutMs,
+			int healthTimeoutMs,
+			ClientFactory clientFactory) {
 		this.defaultConnectTimeoutMs = defaultConnectTimeoutMs;
 		this.defaultReadTimeoutMs = defaultReadTimeoutMs;
+		this.healthTimeoutMs = Math.max(500, healthTimeoutMs);
 		this.clientFactory = clientFactory;
 	}
 
@@ -59,7 +75,7 @@ public class CoreSystemService implements CoreSystemInterface {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		HttpEntity<RfdiffusionRunRequest> entity = new HttpEntity<>(request, headers);
-		client(instance).postForEntity(rfdiffusionBase(instance), entity, String.class);
+		submitClient(instance).postForEntity(rfdiffusionBase(instance), entity, String.class);
 		log.info("Rfdiffusion run triggered: runId={} instanceId={}", request.getRunId(), instance.getId());
 	}
 
@@ -68,7 +84,7 @@ public class CoreSystemService implements CoreSystemInterface {
 		String statusUrl = rfdiffusionBase(instance) + "/status/" + runId;
 		try {
 			@SuppressWarnings("unchecked")
-			Map<String, Object> body = client(instance).getForObject(statusUrl, Map.class);
+			Map<String, Object> body = probeClient().getForObject(statusUrl, Map.class);
 			return body != null ? body : new LinkedHashMap<>();
 		} catch (Exception e) {
 			log.warn("Failed to get status from {}: {}", statusUrl, e.getMessage(), e);
@@ -81,7 +97,7 @@ public class CoreSystemService implements CoreSystemInterface {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		HttpEntity<ProteinMpnnRunRequest> entity = new HttpEntity<>(request, headers);
-		client(instance).postForEntity(mpnnBase(instance), entity, String.class);
+		submitClient(instance).postForEntity(mpnnBase(instance), entity, String.class);
 		log.info("ProteinMPNN run triggered: runId={} instanceId={}", request.getRunId(), instance.getId());
 	}
 
@@ -90,7 +106,7 @@ public class CoreSystemService implements CoreSystemInterface {
 		String url = mpnnBase(instance) + "/status/" + runId;
 		try {
 			@SuppressWarnings("unchecked")
-			Map<String, Object> body = client(instance).getForObject(url, Map.class);
+			Map<String, Object> body = probeClient().getForObject(url, Map.class);
 			return body != null ? body : new LinkedHashMap<>();
 		} catch (org.springframework.web.client.HttpStatusCodeException e) {
 			if (e.getStatusCode().value() == 404) {
@@ -102,8 +118,27 @@ public class CoreSystemService implements CoreSystemInterface {
 			log.warn("Failed to get MPNN status from {}: {}", url, e.getMessage());
 			return null;
 		} catch (Exception e) {
-			log.warn("Failed to get MPNN status from {}: {}", url, e.getMessage(), e);
+			repeatedLog.warn(log, url, "Failed to get MPNN status from " + url + ": " + e.getMessage(), e);
 			return null;
+		}
+	}
+
+	@Override
+	public RunPresence probeMpnnRun(CoreInstance instance, String runId) {
+		String url = mpnnBase(instance) + "/status/" + runId;
+		try {
+			clientFactory.create(PROBE_CONNECT_MS, PROBE_CONNECT_MS).getForObject(url, Map.class);
+			repeatedLog.clear(url);
+			return RunPresence.PRESENT;
+		} catch (org.springframework.web.client.HttpStatusCodeException e) {
+			if (e.getStatusCode().value() == 404) {
+				return RunPresence.ABSENT;
+			}
+			repeatedLog.warn(log, url, "MPNN probe failed for " + url + ": " + e.getMessage(), e);
+			return RunPresence.UNKNOWN;
+		} catch (Exception e) {
+			repeatedLog.warn(log, url, "MPNN probe failed for " + url + ": " + e.getMessage(), e);
+			return RunPresence.UNKNOWN;
 		}
 	}
 
@@ -112,23 +147,22 @@ public class CoreSystemService implements CoreSystemInterface {
 		String url = mpnnBase(instance) + "/status/" + runId + "/detail?batch=" + batch;
 		try {
 			@SuppressWarnings("unchecked")
-			Map<String, Object> body = client(instance).getForObject(url, Map.class);
+			Map<String, Object> body = probeClient().getForObject(url, Map.class);
 			return body != null ? body : new LinkedHashMap<>();
 		} catch (Exception e) {
-			log.warn("Failed to get MPNN status detail from {}: {}", url, e.getMessage(), e);
+			repeatedLog.warn(log, url, "Failed to get MPNN status detail from " + url + ": " + e.getMessage(), e);
 			return null;
 		}
 	}
 
 	@Override
 	public String healthCheck(CoreInstance instance) {
-		int connectMs = effectiveConnectTimeout(instance);
 		String url = instanceBase(instance) + HEALTH_PATH;
 		try {
-			clientFactory.create(connectMs, connectMs).getForObject(url, Map.class);
+			clientFactory.create(healthTimeoutMs, healthTimeoutMs).getForObject(url, Map.class);
 			return CoreInstance.HEALTH_UP;
 		} catch (Exception e) {
-			log.warn("Health check failed for {}: {}", url, e.getMessage());
+			repeatedLog.warn(log, url, "Health check failed for " + url + ": " + e.getMessage(), e);
 			return CoreInstance.HEALTH_DOWN;
 		}
 	}
@@ -146,13 +180,18 @@ public class CoreSystemService implements CoreSystemInterface {
 			Map<String, Object> body = clientFactory.create(connectTimeoutMs, readTimeoutMs).getForObject(url, Map.class);
 			return body != null ? body : new LinkedHashMap<>();
 		} catch (Exception e) {
-			log.warn("Failed to get system metrics from {}: {}", url, e.getMessage());
+			repeatedLog.warn(log, url, "Failed to get system metrics from " + url + ": " + e.getMessage(), e);
 			return null;
 		}
 	}
 
-	private RestTemplate client(CoreInstance instance) {
-		return clientFactory.create(effectiveConnectTimeout(instance), effectiveReadTimeout(instance));
+	private RestTemplate probeClient() {
+		return clientFactory.create(PROBE_CONNECT_MS, PROBE_READ_MS);
+	}
+
+	private RestTemplate submitClient(CoreInstance instance) {
+		int connect = Math.min(PROBE_CONNECT_MS, effectiveConnectTimeout(instance));
+		return clientFactory.create(connect, effectiveReadTimeout(instance));
 	}
 
 	int effectiveConnectTimeout(CoreInstance instance) {

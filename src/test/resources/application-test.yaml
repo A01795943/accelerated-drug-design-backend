@@ -18,6 +18,9 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.H2Dialect
+        connection.isolation: 2
+        jdbc.batch_size: 50
+        order_inserts: true
         type:
           preferred_boolean_jdbc_type: TINYINT
 
@@ -33,7 +36,7 @@ app:
     metrics:
       poll-interval-ms: 3600000
       retention-days: 7
-      max-failures: 3
+      max-failures: 1
   generation:
     minibatch-size: 100
     dispatch-interval-ms: 3600000

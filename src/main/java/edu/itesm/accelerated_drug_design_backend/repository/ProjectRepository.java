@@ -11,12 +11,12 @@ import java.util.Optional;
 
 public interface ProjectRepository extends JpaRepository<Project, Long> {
 
-	/** Solo id, nombre y descripción para el listado. */
-	@Query("SELECT new edu.itesm.accelerated_drug_design_backend.dto.ProjectSummaryDto(p.id, p.name, p.description) FROM Project p ORDER BY p.id")
+	/** Listado sin el texto PDB ni el linaje EC. */
+	@Query("SELECT new edu.itesm.accelerated_drug_design_backend.dto.ProjectSummaryDto(p.id, p.name, p.description, p.targetPdbId, p.ecNumber) FROM Project p ORDER BY p.id")
 	List<ProjectSummaryDto> findAllSummaries();
 
-	/** Solo id, nombre y descripción para detalle (sin target/complex). */
-	@Query("SELECT new edu.itesm.accelerated_drug_design_backend.dto.ProjectSummaryDto(p.id, p.name, p.description) FROM Project p WHERE p.id = :id")
+	/** Detalle sin el texto PDB ni el linaje EC. */
+	@Query("SELECT new edu.itesm.accelerated_drug_design_backend.dto.ProjectSummaryDto(p.id, p.name, p.description, p.targetPdbId, p.ecNumber) FROM Project p WHERE p.id = :id")
 	Optional<ProjectSummaryDto> findSummaryById(@Param("id") Long id);
 
 	/** Solo columna target para no cargar el resto. */

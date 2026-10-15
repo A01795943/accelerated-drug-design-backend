@@ -3,6 +3,7 @@ package edu.itesm.accelerated_drug_design_backend.dto;
 /**
  * DTO para listado de backbones: id, nombre, runID, status, error, contigs, hotspots, chainsToRemove, iterations.
  * Sin structure (PDB); se obtiene con GET .../backbones/{backboneId}/structure.
+ * {@code coreInstanceName} is resolved from {@code core_instance_id} (null while QUEUED).
  */
 public record BackboneListDto(
 	Long id,
@@ -13,5 +14,7 @@ public record BackboneListDto(
 	String contigs,
 	String hotspots,
 	String chainsToRemove,
-	Integer iterations
+	Integer iterations,
+	Long coreInstanceId,
+	String coreInstanceName
 ) {}

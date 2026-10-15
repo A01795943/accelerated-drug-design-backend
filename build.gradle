@@ -25,6 +25,8 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'org.springframework.boot:spring-boot-starter-flyway'
+	implementation 'org.flywaydb:flyway-mysql'
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
 	// https://mvnrepository.com/artifact/com.auth0/java-jwt
 	implementation group: 'com.auth0', name: 'java-jwt', version: '4.3.0'
@@ -53,11 +55,97 @@ dependencies {
 	// OpenAPI 3 + Swagger UI (disabled in prod via app.api-docs.enabled=false)
 	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.1'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
 	testImplementation 'org.springframework.security:spring-security-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	testRuntimeOnly 'com.h2database:h2'
 
 }
 
 tasks.named('test') {
 	useJUnitPlatform()
+}
+
+tasks.register('dropFlywayHistory') {
+	group = 'flyway'
+	description = 'Drop flyway_schema_history on drug_accelerator (dev recovery).'
+	doLast {
+		dropFlywayHistoryFor('drug_accelerator')
+	}
+}
+
+tasks.register('dropFlywayHistoryEmptyTest') {
+	group = 'flyway'
+	description = 'Drop flyway_schema_history on drug_accelerator_flyway_empty_test.'
+	doLast {
+		dropFlywayHistoryFor('drug_accelerator_flyway_empty_test')
+	}
+}
+
+def dropFlywayHistoryFor(String dbName) {
+	def cpUrls = configurations.runtimeClasspath.files.collect { it.toURI().toURL() } as URL[]
+	def loader = new URLClassLoader(cpUrls, this.class.classLoader)
+	def driverClass = loader.loadClass('com.mysql.cj.jdbc.Driver')
+	def driver = driverClass.getDeclaredConstructor().newInstance()
+	def props = new Properties()
+	props.setProperty('user', 'root')
+	props.setProperty('password', '')
+	def url = "jdbc:mysql://localhost:3306/${dbName}?characterEncoding=utf8&connectionCollation=utf8_general_ci"
+	def conn = driver.connect(url, props)
+	try {
+		conn.createStatement().execute('DROP TABLE IF EXISTS flyway_schema_history')
+		println "Dropped flyway_schema_history on ${dbName}"
+	} finally {
+		conn.close()
+	}
+}
+
+def withLocalMysql(String dbName, Closure work) {
+	def cpUrls = configurations.runtimeClasspath.files.collect { it.toURI().toURL() } as URL[]
+	def loader = new URLClassLoader(cpUrls, this.class.classLoader)
+	def driverClass = loader.loadClass('com.mysql.cj.jdbc.Driver')
+	def driver = driverClass.getDeclaredConstructor().newInstance()
+	def props = new Properties()
+	props.setProperty('user', 'root')
+	props.setProperty('password', '')
+	def url = "jdbc:mysql://localhost:3306/${dbName}?characterEncoding=utf8&connectionCollation=utf8_general_ci"
+	def conn = driver.connect(url, props)
+	try {
+		work(conn)
+	} finally {
+		conn.close()
+	}
+}
+
+def tableExists(conn, String dbName, String tableName) {
+	def rs = conn.createStatement().executeQuery(
+		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${dbName}' AND table_name = '${tableName}'"
+	)
+	rs.next()
+	return rs.getInt(1) > 0
+}
+
+tasks.register('repairFlywaySchema') {
+	group = 'flyway'
+	description = 'Fix local DB when Flyway history says v2 but campaign tables are missing.'
+	doLast {
+		def dbName = 'drug_accelerator'
+		withLocalMysql(dbName) { conn ->
+			def campaignsMissing = !tableExists(conn, dbName, 'campaign_backbones')
+			if (!campaignsMissing) {
+				println "campaign_backbones exists on ${dbName}; nothing to repair."
+				return
+			}
+			def historyExists = tableExists(conn, dbName, 'flyway_schema_history')
+			if (historyExists) {
+				conn.createStatement().execute('DROP TABLE flyway_schema_history')
+				println "Dropped flyway_schema_history (was inconsistent with schema)."
+			}
+			println ""
+			println "Campaign tables are missing. Restart the app with default baseline (FLYWAY_BASELINE_VERSION unset or =1)."
+			println "Flyway will baseline V1 on the existing schema and apply V2__data_generation_campaigns.sql."
+			println ""
+			println "Do NOT set FLYWAY_BASELINE_VERSION=2 unless db.sql was already applied in full."
+		}
+	}
 }

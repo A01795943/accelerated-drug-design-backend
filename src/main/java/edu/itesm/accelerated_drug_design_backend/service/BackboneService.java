@@ -6,13 +6,18 @@ import edu.itesm.accelerated_drug_design_backend.dto.BackboneListDto;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateBackbonesRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.RfdiffusionRunRequest;
 import edu.itesm.accelerated_drug_design_backend.entity.Backbone;
+import edu.itesm.accelerated_drug_design_backend.entity.CoreInstance;
 import edu.itesm.accelerated_drug_design_backend.entity.Project;
 import edu.itesm.accelerated_drug_design_backend.repository.BackboneRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -26,17 +31,26 @@ public class BackboneService {
 	private static final String STATUS_COMPLETED = "COMPLETED";
 	private static final String STATUS_ERROR = "ERROR";
 	private static final String STATUS_RUNNING = "RUNNING";
+	private static final String STATUS_QUEUED = Backbone.STATUS_QUEUED;
 
 	private final BackboneRepository backboneRepository;
 	private final ProjectService projectService;
 	private final CoreSystemInterface coreSystem;
+	private final CoreInstanceResolver coreInstanceResolver;
 	private final PdbCacheService pdbCache;
+	private ObjectProvider<BackboneService> self;
+
+	@Autowired
+	void setSelf(ObjectProvider<BackboneService> self) {
+		this.self = self;
+	}
 
 	public BackboneService(BackboneRepository backboneRepository, ProjectService projectService,
-			CoreSystemInterface coreSystem, PdbCacheService pdbCache) {
+			CoreSystemInterface coreSystem, CoreInstanceResolver coreInstanceResolver, PdbCacheService pdbCache) {
 		this.backboneRepository = backboneRepository;
 		this.projectService = projectService;
 		this.coreSystem = coreSystem;
+		this.coreInstanceResolver = coreInstanceResolver;
 		this.pdbCache = pdbCache;
 	}
 
@@ -86,34 +100,13 @@ public class BackboneService {
 			Backbone bb = new Backbone();
 			bb.setProject(project);
 			bb.setRunID(runID);
-			bb.setStatus(STATUS_RUNNING);
+			bb.setCoreInstanceId(null);
+			bb.setStatus(STATUS_QUEUED);
 			bb.setIterations(iterations);
 			bb.setContigs(contigs);
 			bb.setHotspots(hotspots);
 			bb.setChainsToRemove(chainsToRemove);
 			created.add(backboneRepository.save(bb));
-		}
-
-		RfdiffusionRunRequest coreRequest = new RfdiffusionRunRequest();
-		coreRequest.setRunId(runID);
-		coreRequest.setRunName(runID);
-		coreRequest.setPdbContent(project.getTarget() != null ? project.getTarget() : "");
-		coreRequest.setContigs(contigs != null ? contigs : "");
-		coreRequest.setIterations(iterations);
-		coreRequest.setNumDesigns(count);
-		coreRequest.setHotspot(hotspots != null ? hotspots : "");
-		coreRequest.setChainToRemove(chainsToRemove != null ? chainsToRemove : "");
-
-		try {
-			coreSystem.triggerRfdiffusion(coreRequest);
-		} catch (Exception e) {
-			String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-			for (Backbone bb : created) {
-				bb.setStatus(STATUS_ERROR);
-				bb.setError(errMsg);
-			}
-			backboneRepository.saveAll(created);
-			log.warn("Core rfdiffusion call failed for runId={}: {}", runID, errMsg, e);
 		}
 
 		return created;
@@ -123,39 +116,50 @@ public class BackboneService {
 	 * Check run status with the core system, update backbones in DB, and return updated list.
 	 * Core GET returns: { "status": "COMPLETED"|"RUNNING"|"ERROR", "output_pdbs_content": { "output_0": "PDB...", "output_1": "PDB..." }, "error_details": "..." }.
 	 */
-	@Transactional
 	public List<Backbone> checkRunStatus(Long projectId, String runId) {
+		return checkRunStatus(projectId, runId, null);
+	}
+
+	public List<Backbone> checkRunStatus(Long projectId, String runId, CoreInstance instanceOverride) {
 		List<Backbone> backbones = backboneRepository.findByProject_IdAndRunIDOrderByIdAsc(projectId, runId);
 		if (backbones.isEmpty()) {
 			return backbones;
 		}
-
-		Map<String, Object> response = coreSystem.getRfdiffusionStatus(runId);
-		if (response == null) {
+		if (instanceOverride == null && backbones.stream().allMatch(bb -> STATUS_QUEUED.equals(bb.getStatus()))) {
 			return backbones;
 		}
 
-		String status = getString(response, "status");
-		if (status == null || status.isBlank()) {
+		CoreInstance instance = instanceOverride != null
+				? instanceOverride
+				: resolveAssignedInstance(backbones.get(0).getCoreInstanceId());
+		if (instance == null) {
 			return backbones;
 		}
 
-		// Normalize status to uppercase for consistency
-		status = status.toUpperCase().strip();
+		Map<String, Object> response = coreSystem.getRfdiffusionStatus(instance, runId);
+		if (response == null || getString(response, "status") == null || getString(response, "status").isBlank()) {
+			return backboneRepository.findByProject_IdAndRunIDOrderByIdAsc(projectId, runId);
+		}
+		return self.getObject().applyRfdiffusionStatus(projectId, runId, instance.getId(), response);
+	}
 
+	@Transactional(isolation = Isolation.READ_COMMITTED, timeout = 15)
+	public List<Backbone> applyRfdiffusionStatus(Long projectId, String runId, Long instanceId, Map<String, Object> response) {
+		List<Backbone> backbones = backboneRepository.findByProject_IdAndRunIDOrderByIdAsc(projectId, runId);
+		String status = getString(response, "status").toUpperCase().strip();
 		for (Backbone bb : backbones) {
 			bb.setStatus(status);
+			if (bb.getCoreInstanceId() == null && instanceId != null) {
+				bb.setCoreInstanceId(instanceId);
+			}
 		}
-
 		if (STATUS_COMPLETED.equals(status)) {
-			// PDB content is in output_pdbs_content: { "output_0": "ATOM...", "output_1": "ATOM...", ... }
 			Object outputContentObj = response.get("output_pdbs_content");
 			if (outputContentObj instanceof Map) {
 				@SuppressWarnings("unchecked")
 				Map<String, Object> outputPdbsContent = (Map<String, Object>) outputContentObj;
 				for (int i = 0; i < backbones.size(); i++) {
-					String key = "output_" + i;
-					String pdb = getString(outputPdbsContent, key);
+					String pdb = getString(outputPdbsContent, "output_" + i);
 					if (pdb != null && !pdb.isBlank()) {
 						backbones.get(i).setStructure(pdb);
 					}
@@ -167,25 +171,91 @@ public class BackboneService {
 			}
 		} else if (STATUS_ERROR.equals(status)) {
 			String errorDetails = getString(response, "error_details");
-			if (errorDetails == null) {
-				errorDetails = getString(response, "error");
-			}
-			if (errorDetails == null) {
-				errorDetails = getString(response, "message");
-			}
-			if (errorDetails == null) {
-				errorDetails = "Unknown error";
-			}
+			if (errorDetails == null) errorDetails = getString(response, "error");
+			if (errorDetails == null) errorDetails = getString(response, "message");
+			if (errorDetails == null) errorDetails = "Unknown error";
 			for (Backbone bb : backbones) {
 				bb.setError(errorDetails);
 			}
 			backboneRepository.saveAll(backbones);
 		} else {
-			// RUNNING or other: just update status
 			backboneRepository.saveAll(backbones);
 		}
-
 		return backbones;
+	}
+
+	private CoreInstance resolveAssignedInstance(Long coreInstanceId) {
+		if (coreInstanceId == null) {
+			return null;
+		}
+		return coreInstanceResolver.findById(coreInstanceId).orElse(null);
+	}
+
+	@Transactional(readOnly = true)
+	public List<String> findQueuedRunIdsReady(Instant now) {
+		return backboneRepository.findQueuedRunIdsReady(STATUS_QUEUED, now);
+	}
+
+	@Transactional
+	public int markRunningIfQueued(String runId, Long instanceId) {
+		return backboneRepository.markRunningIfQueued(runId, instanceId, STATUS_QUEUED, STATUS_RUNNING);
+	}
+
+	public void triggerQueuedRfdiffusion(String runId, CoreInstance instance) {
+		List<Backbone> backbones = backboneRepository.findByRunIDOrderByIdAsc(runId);
+		if (backbones.isEmpty()) {
+			throw new IllegalStateException("No backbones for runId=" + runId);
+		}
+		Backbone first = backbones.get(0);
+		Project project = first.getProject();
+		RfdiffusionRunRequest coreRequest = new RfdiffusionRunRequest();
+		coreRequest.setRunId(runId);
+		coreRequest.setRunName(runId);
+		coreRequest.setPdbContent(project.getTarget() != null ? project.getTarget() : "");
+		coreRequest.setContigs(first.getContigs() != null ? first.getContigs() : "");
+		coreRequest.setIterations(first.getIterations() != null ? first.getIterations() : 30);
+		coreRequest.setNumDesigns(backbones.size());
+		coreRequest.setHotspot(first.getHotspots() != null ? first.getHotspots() : "");
+		coreRequest.setChainToRemove(first.getChainsToRemove() != null ? first.getChainsToRemove() : "");
+		coreSystem.triggerRfdiffusion(instance, coreRequest);
+	}
+
+	@Transactional
+	public void requeueOrFail(String runId, String error, int maxAttempts, Instant nextDispatchAt) {
+		List<Backbone> backbones = backboneRepository.findByRunIDOrderByIdAsc(runId);
+		if (backbones.isEmpty()) {
+			return;
+		}
+		int attempts = backbones.get(0).getDispatchAttempts() + 1;
+		boolean giveUp = attempts >= maxAttempts;
+		for (Backbone bb : backbones) {
+			bb.setDispatchAttempts(attempts);
+			bb.setCoreInstanceId(null);
+			bb.setError(error);
+			if (giveUp) {
+				bb.setStatus(STATUS_ERROR);
+				bb.setNextDispatchAt(null);
+			} else {
+				bb.setStatus(STATUS_QUEUED);
+				bb.setNextDispatchAt(nextDispatchAt);
+			}
+		}
+		backboneRepository.saveAll(backbones);
+		if (giveUp) {
+			log.warn("Backbone run {} failed after {} dispatch attempts: {}", runId, attempts, error);
+		}
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<Long> findProjectIdByRunId(String runId) {
+		return backboneRepository.findByRunIDOrderByIdAsc(runId).stream()
+				.findFirst()
+				.map(bb -> bb.getProject().getId());
+	}
+
+	@Transactional(readOnly = true)
+	public List<Backbone> findByRunId(String runId) {
+		return backboneRepository.findByRunIDOrderByIdAsc(runId);
 	}
 
 	private static String getString(Map<String, Object> map, String key) {

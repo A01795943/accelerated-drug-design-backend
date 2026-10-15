@@ -1,10 +1,9 @@
 package edu.itesm.accelerated_drug_design_backend.service;
 
-import edu.itesm.accelerated_drug_design_backend.entity.CoreInstance;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJobMinibatch;
-import edu.itesm.accelerated_drug_design_backend.repository.CoreInstanceRepository;
 import edu.itesm.accelerated_drug_design_backend.repository.GenerationJobMinibatchRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -13,31 +12,34 @@ import java.time.Instant;
 public class MinibatchClaimService {
 
 	private final GenerationJobMinibatchRepository minibatchRepository;
-	private final CoreInstanceRepository coreInstanceRepository;
 
-	public MinibatchClaimService(
-			GenerationJobMinibatchRepository minibatchRepository,
-			CoreInstanceRepository coreInstanceRepository) {
+	public MinibatchClaimService(GenerationJobMinibatchRepository minibatchRepository) {
 		this.minibatchRepository = minibatchRepository;
-		this.coreInstanceRepository = coreInstanceRepository;
 	}
 
-	@Transactional
+	@Transactional(isolation = Isolation.READ_COMMITTED, timeout = 5)
+	public boolean adopt(Long minibatchId, Long instanceId) {
+		int updated = minibatchRepository.adoptIfPending(
+				minibatchId,
+				instanceId,
+				Instant.now(),
+				GenerationJobMinibatch.STATUS_PENDING,
+				GenerationJobMinibatch.STATUS_RUNNING);
+		return updated == 1;
+	}
+
+	@Transactional(isolation = Isolation.READ_COMMITTED, timeout = 5)
 	public boolean claim(Long minibatchId, Long instanceId) {
-		GenerationJobMinibatch minibatch = minibatchRepository.findByIdForUpdate(minibatchId).orElse(null);
-		if (minibatch == null || !GenerationJobMinibatch.STATUS_PENDING.equals(minibatch.getStatus())) {
-			return false;
-		}
-		minibatch.setStatus(GenerationJobMinibatch.STATUS_RUNNING);
-		minibatch.setCoreInstanceId(instanceId);
-		minibatch.setStartedAt(Instant.now());
-		minibatch.setAttempts(minibatch.getAttempts() + 1);
-		minibatch.setError(null);
-		minibatchRepository.save(minibatch);
-		return true;
+		int updated = minibatchRepository.claimIfPending(
+				minibatchId,
+				instanceId,
+				Instant.now(),
+				GenerationJobMinibatch.STATUS_PENDING,
+				GenerationJobMinibatch.STATUS_RUNNING);
+		return updated == 1;
 	}
 
-	@Transactional
+	@Transactional(isolation = Isolation.READ_COMMITTED, timeout = 5)
 	public void revertUnsentClaim(Long minibatchId) {
 		GenerationJobMinibatch minibatch = minibatchRepository.findById(minibatchId).orElse(null);
 		if (minibatch == null || !GenerationJobMinibatch.STATUS_RUNNING.equals(minibatch.getStatus())) {
@@ -50,13 +52,4 @@ public class MinibatchClaimService {
 		minibatchRepository.save(minibatch);
 	}
 
-	@Transactional
-	public void notePostFailure(Long instanceId) {
-		CoreInstance instance = coreInstanceRepository.findById(instanceId).orElse(null);
-		if (instance == null) {
-			return;
-		}
-		instance.setConsecutiveFailures(instance.getConsecutiveFailures() + 1);
-		coreInstanceRepository.save(instance);
-	}
 }

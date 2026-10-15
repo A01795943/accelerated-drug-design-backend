@@ -16,6 +16,9 @@ public class GenerationJobRecord {
 	@Column(name = "n")
 	private Integer n;
 
+	@Column(name = "minibatch_id")
+	private Long minibatchId;
+
 	@ManyToOne(fetch = FetchType.LAZY)
 	@JoinColumn(name = "generation_job_id", insertable = false, updatable = false)
 	@JsonIgnore
@@ -58,6 +61,14 @@ public class GenerationJobRecord {
 
 	public void setN(Integer n) {
 		this.n = n;
+	}
+
+	public Long getMinibatchId() {
+		return minibatchId;
+	}
+
+	public void setMinibatchId(Long minibatchId) {
+		this.minibatchId = minibatchId;
 	}
 
 	public GenerationJob getGenerationJob() {

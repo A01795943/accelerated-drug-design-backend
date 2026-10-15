@@ -3,6 +3,7 @@ package edu.itesm.accelerated_drug_design_backend.service;
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.algorithms.Algorithm;
 import edu.itesm.accelerated_drug_design_backend.core.CoreSystemInterface;
+import edu.itesm.accelerated_drug_design_backend.core.RunPresence;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateBackbonesRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.ProteinMpnnRunRequest;
@@ -21,11 +22,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -67,7 +71,7 @@ class CoreDispatchServiceIntegrationTest {
 	@Autowired
 	private BackboneService backboneService;
 
-	@Autowired
+	@MockitoSpyBean
 	private GenerationJobService generationJobService;
 
 	@Autowired
@@ -83,7 +87,13 @@ class CoreDispatchServiceIntegrationTest {
 	private GenerationJobMinibatchRepository minibatchRepository;
 
 	@Autowired
+	private GenerationJobRepository generationJobRepository;
+
+	@Autowired
 	private CoreInstanceRepository coreInstanceRepository;
+
+	@Autowired
+	private CoreMetricsPoller metricsPoller;
 
 	@MockitoBean
 	private CoreSystemInterface coreSystem;
@@ -102,7 +112,7 @@ class CoreDispatchServiceIntegrationTest {
 	void createJob_splitsMinibatchesAndDoesNotCallCore() {
 		GenerationJob job = createQueuedJob();
 
-		assertEquals(GenerationJob.STATUS_RUNNING, job.getStatus());
+		assertEquals(GenerationJob.STATUS_QUEUED, job.getStatus());
 		assertEquals(1, job.getTotalMinibatches());
 		assertEquals(0, job.getCompletedMinibatches());
 		assertNull(job.getCoreInstanceId());
@@ -122,7 +132,7 @@ class CoreDispatchServiceIntegrationTest {
 						job.getProject().getId(), job.getRunId())
 						.header("Authorization", "Bearer " + userToken()))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.status").value(GenerationJob.STATUS_RUNNING))
+				.andExpect(jsonPath("$.status").value(GenerationJob.STATUS_QUEUED))
 				.andExpect(jsonPath("$.totalMinibatches").value(1))
 				.andExpect(jsonPath("$.completedMinibatches").value(0));
 
@@ -139,7 +149,7 @@ class CoreDispatchServiceIntegrationTest {
 	}
 
 	@Test
-	void minibatchDispatch_assignsFreeInstanceAndPostsChunk() {
+	void minibatchDispatch_assignsFreeInstanceAndPostsChunk() throws Exception {
 		GenerationJob job = createQueuedJob();
 
 		minibatchDispatcher.dispatchPending();
@@ -148,12 +158,28 @@ class CoreDispatchServiceIntegrationTest {
 		assertEquals(GenerationJobMinibatch.STATUS_RUNNING, minibatch.getStatus());
 		assertNotNull(minibatch.getCoreInstanceId());
 		assertEquals(1, minibatch.getAttempts());
+		assertEquals(GenerationJob.STATUS_RUNNING, generationJobService.findById(job.getId()).orElseThrow().getStatus());
 
 		ArgumentCaptor<ProteinMpnnRunRequest> req = ArgumentCaptor.forClass(ProteinMpnnRunRequest.class);
 		verify(coreSystem, times(1)).triggerMpnn(any(), req.capture());
 		assertEquals(job.getRunId() + "_m0", req.getValue().getRunId());
 		assertEquals(4, req.getValue().getNumSeqs());
 		assertNotNull(req.getValue().getSeed());
+
+		mockMvc.perform(get("/api/projects/{projectId}/generation-jobs/{jobId}/minibatches",
+						job.getProject().getId(), job.getId())
+						.header("Authorization", "Bearer " + userToken()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.jobStatus").value(GenerationJob.STATUS_RUNNING))
+				.andExpect(jsonPath("$.minibatches[0].idx").value(0))
+				.andExpect(jsonPath("$.minibatches[0].nOffset").value(0))
+				.andExpect(jsonPath("$.minibatches[0].sequenceEnd").value(3))
+				.andExpect(jsonPath("$.minibatches[0].numSeqs").value(4))
+				.andExpect(jsonPath("$.minibatches[0].status").value(GenerationJobMinibatch.STATUS_RUNNING))
+				.andExpect(jsonPath("$.minibatches[0].instance.id").value(minibatch.getCoreInstanceId().intValue()))
+				.andExpect(jsonPath("$.minibatches[0].instance.baseUrl").isNotEmpty())
+				.andExpect(jsonPath("$.minibatches[0].attemptHistory.length()").value(1))
+				.andExpect(jsonPath("$.minibatches[0].attemptHistory[0].attempt").value(1));
 	}
 
 	@Test
@@ -168,6 +194,8 @@ class CoreDispatchServiceIntegrationTest {
 		GenerationJobMinibatch m2 = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(job2.getId()).get(0);
 		assertEquals(GenerationJobMinibatch.STATUS_RUNNING, m1.getStatus());
 		assertEquals(GenerationJobMinibatch.STATUS_RUNNING, m2.getStatus());
+		assertEquals(GenerationJob.STATUS_RUNNING, generationJobService.findById(job1.getId()).orElseThrow().getStatus());
+		assertEquals(GenerationJob.STATUS_RUNNING, generationJobService.findById(job2.getId()).orElseThrow().getStatus());
 		assertTrue(!m1.getCoreInstanceId().equals(m2.getCoreInstanceId()));
 		verify(coreSystem, times(2)).triggerMpnn(any(), any());
 	}
@@ -186,6 +214,135 @@ class CoreDispatchServiceIntegrationTest {
 		long pending = minibatches.stream().filter(m -> GenerationJobMinibatch.STATUS_PENDING.equals(m.getStatus())).count();
 		assertEquals(1, running);
 		assertEquals(1, pending);
+		long runningJobs = List.of(job1, job2).stream()
+				.map(job -> generationJobService.findById(job.getId()).orElseThrow().getStatus())
+				.filter(GenerationJob.STATUS_RUNNING::equals)
+				.count();
+		long queuedJobs = List.of(job1, job2).stream()
+				.map(job -> generationJobService.findById(job.getId()).orElseThrow().getStatus())
+				.filter(GenerationJob.STATUS_QUEUED::equals)
+				.count();
+		assertEquals(1, runningJobs);
+		assertEquals(1, queuedJobs);
+		verify(coreSystem, times(1)).triggerMpnn(any(), any());
+	}
+
+	@Test
+	void runningJob_dispatchesPendingMinibatchesToFreeInstances() {
+		Object previousSize = ReflectionTestUtils.getField(generationJobService, "minibatchSize");
+		ReflectionTestUtils.setField(generationJobService, "minibatchSize", 2);
+		try {
+			persistFreeInstance("http://10.0.0.32:8000");
+			GenerationJob job = createQueuedJob();
+			job.setStatus(GenerationJob.STATUS_RUNNING);
+			generationJobRepository.save(job);
+
+			minibatchDispatcher.dispatchPending();
+
+			List<GenerationJobMinibatch> chunks = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(job.getId());
+			assertEquals(2, chunks.size());
+			assertEquals(2, chunks.stream().filter(m -> GenerationJobMinibatch.STATUS_RUNNING.equals(m.getStatus())).count());
+			assertEquals(GenerationJob.STATUS_RUNNING, generationJobService.findById(job.getId()).orElseThrow().getStatus());
+			verify(coreSystem, times(2)).triggerMpnn(any(), any());
+		} finally {
+			ReflectionTestUtils.setField(generationJobService, "minibatchSize", previousSize);
+		}
+	}
+
+	@Test
+	void failedPostLeavesPendingAndRetriesOnAFreeInstance() {
+		Object previousSize = ReflectionTestUtils.getField(generationJobService, "minibatchSize");
+		ReflectionTestUtils.setField(generationJobService, "minibatchSize", 2);
+		try {
+			persistFreeInstance("http://10.0.0.33:8000");
+			GenerationJob job = createQueuedJob();
+			job.setStatus(GenerationJob.STATUS_RUNNING);
+			generationJobRepository.save(job);
+			doThrow(new RuntimeException("Unexpected end of file from server"))
+					.doNothing()
+					.when(coreSystem).triggerMpnn(any(), any());
+
+			minibatchDispatcher.dispatchPending();
+
+			List<GenerationJobMinibatch> first = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(job.getId());
+			GenerationJobMinibatch waiting = first.stream()
+					.filter(m -> GenerationJobMinibatch.STATUS_PENDING.equals(m.getStatus()))
+					.findFirst()
+					.orElseThrow();
+			GenerationJobMinibatch sent = first.stream()
+					.filter(m -> GenerationJobMinibatch.STATUS_RUNNING.equals(m.getStatus()))
+					.findFirst()
+					.orElseThrow();
+			assertEquals(0, waiting.getAttempts());
+			assertNull(waiting.getCoreInstanceId());
+			assertEquals(1, sent.getAttempts());
+			assertTrue(coreInstanceRepository.findAll().stream()
+					.anyMatch(i -> CoreInstance.STATUS_UNAVAILABLE.equals(i.getStatus())));
+
+			for (CoreInstance instance : coreInstanceRepository.findAll()) {
+				if (CoreInstance.STATUS_UNAVAILABLE.equals(instance.getStatus())) {
+					instance.setStatus(CoreInstance.STATUS_AVAILABLE);
+					instance.setConsecutiveFailures(0);
+					instance.setStatusReason(null);
+					coreInstanceRepository.save(instance);
+				}
+			}
+
+			minibatchDispatcher.dispatchPending();
+
+			GenerationJobMinibatch retried = minibatchRepository.findById(waiting.getId()).orElseThrow();
+			assertEquals(GenerationJobMinibatch.STATUS_RUNNING, retried.getStatus());
+			assertEquals(1, retried.getAttempts());
+			assertNotNull(retried.getCoreInstanceId());
+			assertTrue(!retried.getCoreInstanceId().equals(sent.getCoreInstanceId()));
+		} finally {
+			ReflectionTestUtils.setField(generationJobService, "minibatchSize", previousSize);
+		}
+	}
+
+	@Test
+	void databaseFailureAfterSuccessfulPostDoesNotDispatchAgain() {
+		GenerationJob job = createQueuedJob();
+		try {
+			doThrow(new CannotAcquireLockException("Deadlock found"))
+					.when(generationJobService).markRunningIfStillQueued(any());
+
+			minibatchDispatcher.dispatchPending();
+
+			GenerationJobMinibatch minibatch = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(job.getId()).get(0);
+			assertEquals(GenerationJobMinibatch.STATUS_RUNNING, minibatch.getStatus());
+			verify(coreSystem, times(1)).triggerMpnn(any(), any());
+
+			minibatchDispatcher.dispatchPending();
+
+			assertEquals(GenerationJobMinibatch.STATUS_RUNNING,
+					minibatchRepository.findById(minibatch.getId()).orElseThrow().getStatus());
+			verify(coreSystem, times(1)).triggerMpnn(any(), any());
+		} finally {
+			org.mockito.Mockito.reset(generationJobService);
+		}
+	}
+
+	@Test
+	void pendingMinibatchWhoseRunAlreadyExistsIsAdopted() {
+		GenerationJob job = createQueuedJob();
+		minibatchDispatcher.dispatchPending();
+		verify(coreSystem, times(1)).triggerMpnn(any(), any());
+
+		GenerationJobMinibatch minibatch = minibatchRepository.findByGenerationJobIdOrderByIdxAsc(job.getId()).get(0);
+		minibatch.setStatus(GenerationJobMinibatch.STATUS_PENDING);
+		minibatch.setCoreInstanceId(null);
+		minibatch.setStartedAt(null);
+		minibatch.setAttempts(0);
+		minibatchRepository.save(minibatch);
+		when(coreSystem.probeMpnnRun(any(), any())).thenReturn(RunPresence.PRESENT);
+
+		minibatchDispatcher.dispatchPending();
+
+		GenerationJobMinibatch adopted = minibatchRepository.findById(minibatch.getId()).orElseThrow();
+		assertEquals(GenerationJobMinibatch.STATUS_RUNNING, adopted.getStatus());
+		assertNotNull(adopted.getCoreInstanceId());
+		assertEquals(0, adopted.getAttempts());
 		verify(coreSystem, times(1)).triggerMpnn(any(), any());
 	}
 
@@ -200,7 +357,14 @@ class CoreDispatchServiceIntegrationTest {
 		assertEquals(GenerationJobMinibatch.STATUS_PENDING, minibatch.getStatus());
 		assertNull(minibatch.getCoreInstanceId());
 		assertEquals(0, minibatch.getAttempts());
-		assertTrue(coreInstanceRepository.findAll().stream().anyMatch(i -> i.getConsecutiveFailures() >= 1));
+		assertEquals(GenerationJob.STATUS_QUEUED, generationJobService.findById(job.getId()).orElseThrow().getStatus());
+		CoreInstance failed = coreInstanceRepository.findAll().stream()
+				.filter(i -> i.getConsecutiveFailures() >= 1)
+				.findFirst()
+				.orElseThrow();
+		assertEquals(CoreInstance.STATUS_UNAVAILABLE, failed.getStatus());
+		assertNotNull(failed.getStatusReason());
+		metricsPoller.recordReachable(failed.getId());
 	}
 
 	@Test

@@ -1,15 +1,20 @@
 package edu.itesm.accelerated_drug_design_backend.web;
 
+import edu.itesm.accelerated_drug_design_backend.dto.BackboneFilterOption;
+import edu.itesm.accelerated_drug_design_backend.dto.ConsolidateCsvRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.CreateGenerationJobRequest;
 import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobDetailDto;
-import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobListItem;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobMinibatchesDto;
+import edu.itesm.accelerated_drug_design_backend.dto.GenerationJobPageResponse;
 import edu.itesm.accelerated_drug_design_backend.dto.RecordsPageResponse;
 import edu.itesm.accelerated_drug_design_backend.entity.GenerationJob;
 import edu.itesm.accelerated_drug_design_backend.service.GenerationJobService;
+import edu.itesm.accelerated_drug_design_backend.service.MinibatchReportService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -17,6 +22,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 
@@ -26,14 +32,48 @@ import java.util.Optional;
 public class GenerationJobController {
 
 	private final GenerationJobService generationJobService;
+	private final MinibatchReportService minibatchReportService;
 
-	public GenerationJobController(GenerationJobService generationJobService) {
+	public GenerationJobController(
+			GenerationJobService generationJobService,
+			MinibatchReportService minibatchReportService) {
 		this.generationJobService = generationJobService;
+		this.minibatchReportService = minibatchReportService;
 	}
 
 	@GetMapping
-	public ResponseEntity<List<GenerationJobListItem>> listJobs(@PathVariable Long projectId) {
-		return ResponseEntity.ok(generationJobService.findListItemsByProjectId(projectId));
+	public ResponseEntity<GenerationJobPageResponse> listJobs(
+			@PathVariable Long projectId,
+			@RequestParam(required = false) List<Long> backboneIds,
+			@RequestParam(defaultValue = "0") int page,
+			@RequestParam(defaultValue = "10") int size,
+			@RequestParam(required = false) String sort,
+			@RequestParam(defaultValue = "desc") String direction) {
+		return ResponseEntity.ok(generationJobService.findListPage(projectId, backboneIds, page, size, sort, direction));
+	}
+
+	@GetMapping("/filter-backbones")
+	public ResponseEntity<List<BackboneFilterOption>> filterBackbones(@PathVariable Long projectId) {
+		return ResponseEntity.ok(generationJobService.findBackbonesWithJobs(projectId));
+	}
+
+	@GetMapping("/consolidatable-ids")
+	public ResponseEntity<List<Long>> consolidatableIds(
+			@PathVariable Long projectId,
+			@RequestParam(required = false) List<Long> backboneIds) {
+		return ResponseEntity.ok(generationJobService.findConsolidatableIds(projectId, backboneIds));
+	}
+
+	@PostMapping(value = "/consolidated-csv", produces = "text/csv")
+	public void consolidatedCsv(
+			@PathVariable Long projectId,
+			@RequestBody ConsolidateCsvRequest request,
+			HttpServletResponse response) throws IOException {
+		List<Long> jobIds = generationJobService.resolveConsolidatableJobIds(projectId, request);
+		response.setCharacterEncoding("UTF-8");
+		response.setContentType("text/csv;charset=UTF-8");
+		response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"consolidated.csv\"");
+		generationJobService.writeConsolidatedCsv(projectId, jobIds, response.getOutputStream());
 	}
 
 	@GetMapping("/{jobId}")
@@ -67,6 +107,16 @@ public class GenerationJobController {
 			@PathVariable Long jobId) {
 		return generationJobService.getFasta(projectId, jobId)
 				.map(body -> ResponseEntity.ok().body(body != null ? body : ""))
+				.orElse(ResponseEntity.notFound().build());
+	}
+
+	@GetMapping("/{jobId}/minibatches")
+	@Operation(summary = "List minibatches and attempt history for a generation job")
+	public ResponseEntity<GenerationJobMinibatchesDto> listMinibatches(
+			@PathVariable Long projectId,
+			@PathVariable Long jobId) {
+		return minibatchReportService.list(projectId, jobId)
+				.map(ResponseEntity::ok)
 				.orElse(ResponseEntity.notFound().build());
 	}
 

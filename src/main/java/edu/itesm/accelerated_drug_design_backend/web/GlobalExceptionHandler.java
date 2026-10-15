@@ -27,6 +27,21 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(Map.of("error", e.getMessage()));
 	}
 
+	@ExceptionHandler(ResourceConflictException.class)
+	public ResponseEntity<Map<String, String>> handleConflict(ResourceConflictException e) {
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", e.getMessage()));
+	}
+
+	@ExceptionHandler(org.springframework.web.bind.MethodArgumentNotValidException.class)
+	public ResponseEntity<Map<String, String>> handleValidation(
+			org.springframework.web.bind.MethodArgumentNotValidException e) {
+		String message = e.getBindingResult().getFieldErrors().stream()
+				.map(err -> err.getField() + ": " + err.getDefaultMessage())
+				.findFirst()
+				.orElse("Invalid request");
+		return ResponseEntity.badRequest().body(Map.of("error", message));
+	}
+
 	@ExceptionHandler(BadCredentialsException.class)
 	public ResponseEntity<Map<String, String>> handleBadCredentials(BadCredentialsException e) {
 		return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Invalid email or password"));
